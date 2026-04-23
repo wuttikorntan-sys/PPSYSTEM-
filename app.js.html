@@ -1,0 +1,914 @@
+<script>
+/* ===== app.js — router + state + page renderers ===== */
+
+window.AppState = {
+  token: localStorage.getItem('pp_token') || '',
+  user: JSON.parse(localStorage.getItem('pp_user') || 'null'),
+  cache: {}
+};
+
+/* ===== Utilities ===== */
+function $(sel, root) { return (root || document).querySelector(sel); }
+function $$(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
+function el(tag, attrs, children) {
+  var n = document.createElement(tag);
+  if (attrs) Object.keys(attrs).forEach(function (k) {
+    if (k === 'class') n.className = attrs[k];
+    else if (k === 'html') n.innerHTML = attrs[k];
+    else if (k.indexOf('on') === 0) n.addEventListener(k.slice(2), attrs[k]);
+    else n.setAttribute(k, attrs[k]);
+  });
+  (children || []).forEach(function (c) {
+    if (typeof c === 'string') n.appendChild(document.createTextNode(c));
+    else if (c) n.appendChild(c);
+  });
+  return n;
+}
+function esc(s) {
+  if (s === null || s === undefined) return '';
+  return String(s).replace(/[&<>"']/g, function (c) {
+    return { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c];
+  });
+}
+function fmtDate(d, withTime) {
+  if (!d) return '';
+  try {
+    var dt = new Date(d);
+    if (isNaN(dt.getTime())) return String(d);
+    var Y = dt.getFullYear(), M = ('0'+(dt.getMonth()+1)).slice(-2), D = ('0'+dt.getDate()).slice(-2);
+    if (!withTime) return Y+'-'+M+'-'+D;
+    var H = ('0'+dt.getHours()).slice(-2), m = ('0'+dt.getMinutes()).slice(-2);
+    return Y+'-'+M+'-'+D+' '+H+':'+m;
+  } catch (e) { return String(d); }
+}
+function isUrgent(v) { return v === true || String(v).toLowerCase() === 'true'; }
+
+/* ===== Toast ===== */
+function toast(msg, kind) {
+  var c = $('#toast-container');
+  if (!c) { c = el('div', { id: 'toast-container', class: 'toast-container' }); document.body.appendChild(c); }
+  var t = el('div', { class: 'toast ' + (kind || '') }, [String(msg)]);
+  c.appendChild(t);
+  setTimeout(function () { t.remove(); }, 3500);
+}
+
+/* ===== Loader ===== */
+function showLoader() {
+  if ($('#global-loader')) return;
+  document.body.appendChild(el('div', { id:'global-loader', class:'loader' }, [el('div', {class:'spinner'})]));
+}
+function hideLoader() { var l = $('#global-loader'); if (l) l.remove(); }
+
+async function withLoader(p) { showLoader(); try { return await p; } finally { hideLoader(); } }
+
+/* ===== Permission helpers ===== */
+function role() { return AppState.user && AppState.user.role; }
+function isAdmin() { return role() === 'Admin'; }
+function isSupervisorPlus() { return role() === 'Admin' || role() === 'Supervisor'; }
+
+/* ===== Modal ===== */
+function modal(title, contentEl, actions) {
+  var backdrop = el('div', { class: 'modal-backdrop', onclick: function (e) { if (e.target === backdrop) backdrop.remove(); } });
+  var wrap = el('div', { class: 'modal' }, [
+    el('h3', {}, [title]),
+    contentEl,
+    el('div', { class: 'modal-actions' }, (actions || []).map(function (a) {
+      return el('button', { class: 'btn '+(a.class||'btn-secondary'), onclick: function () { Promise.resolve(a.onClick && a.onClick()).then(function (close) { if (close !== false) backdrop.remove(); }); } }, [a.label]);
+    }))
+  ]);
+  backdrop.appendChild(wrap);
+  document.body.appendChild(backdrop);
+  return backdrop;
+}
+function confirmModal(title, message, onConfirm) {
+  modal(title, el('div', {}, [el('p', {}, [message])]), [
+    { label: 'ยกเลิก', class: 'btn-secondary' },
+    { label: 'ยืนยัน', class: 'btn-danger', onClick: onConfirm }
+  ]);
+}
+
+/* ===== Router =====
+ * Built lazily because some renderers (renderCustomers/Products/Materials) are
+ * `const` assignments declared later in the file, so they're in TDZ at module load.
+ */
+function getRoutes() {
+  return [
+    { match: /^#?\/?login\/?$/, render: renderLogin, public: true },
+    { match: /^#?\/?dashboard\/?$/, render: renderDashboard },
+    { match: /^#?\/?orders\/new\/?$/, render: renderOrderForm },
+    { match: /^#?\/?orders\/([^/]+)\/qc\/?$/, render: renderQC },
+    { match: /^#?\/?orders\/([^/]+)\/?$/, render: renderOrderDetail },
+    { match: /^#?\/?orders\/?$/, render: renderOrderList },
+    { match: /^#?\/?preorders\/?$/, render: renderPreOrderList },
+    { match: /^#?\/?customers\/?$/, render: renderCustomers },
+    { match: /^#?\/?products\/?$/, render: renderProducts },
+    { match: /^#?\/?materials\/?$/, render: renderMaterials },
+    { match: /^#?\/?users\/?$/, render: renderUsers, role: ['Admin'] },
+    { match: /^#?\/?settings\/?$/, render: renderSettings, role: ['Admin'] }
+  ];
+}
+
+function navigate(hash) { location.hash = hash; }
+function currentHash() { return location.hash || '#/dashboard'; }
+
+async function route() {
+  var h = currentHash();
+  if (!AppState.token || !AppState.user) {
+    return renderLogin();
+  }
+  var routes = getRoutes();
+  for (var i = 0; i < routes.length; i++) {
+    var m = h.match(routes[i].match);
+    if (m) {
+      if (routes[i].role && routes[i].role.indexOf(role()) < 0) {
+        toast('สิทธิ์ไม่เพียงพอ', 'error');
+        return navigate('#/dashboard');
+      }
+      try { await routes[i].render.apply(null, m.slice(1)); }
+      catch (e) { console.error(e); toast(e.message || 'Error', 'error'); }
+      highlightNav(h);
+      return;
+    }
+  }
+  navigate('#/dashboard');
+}
+
+function highlightNav(h) {
+  $$('#main-nav a').forEach(function (a) { a.classList.remove('active'); });
+  var match = $$('#main-nav a').find(function (a) { return h.indexOf(a.getAttribute('data-base')) === 0; });
+  if (match) match.classList.add('active');
+}
+
+window.addEventListener('hashchange', route);
+window.addEventListener('DOMContentLoaded', boot);
+
+async function boot() {
+  if (AppState.token) {
+    try {
+      var u = await withLoader(API.getCurrentUser());
+      AppState.user = u;
+      localStorage.setItem('pp_user', JSON.stringify(u));
+    } catch (e) {
+      AppState.token = ''; AppState.user = null;
+      localStorage.removeItem('pp_token'); localStorage.removeItem('pp_user');
+    }
+  }
+  renderShell();
+  if (!location.hash || location.hash === '#') location.hash = AppState.user ? '#/dashboard' : '#/login';
+  route();
+}
+
+function renderShell() {
+  var shell = $('#app');
+  shell.innerHTML = '';
+  if (!AppState.user) { shell.appendChild(el('div', { id:'view' })); return; }
+  var nav = el('nav', { id:'main-nav' }, [
+    navLink('#/dashboard', '🏠 หน้าหลัก'),
+    navLink('#/orders', '📋 ใบงาน'),
+    navLink('#/orders/new', '➕ สร้างใบงาน'),
+    navLink('#/preorders', '📦 Pre-Order'),
+    navLink('#/customers', '👥 ลูกค้า'),
+    navLink('#/products', '🎨 สินค้า'),
+    navLink('#/materials', '🧪 วัตถุดิบ'),
+    isAdmin() ? navLink('#/users', '👤 ผู้ใช้') : null,
+    isAdmin() ? navLink('#/settings', '⚙️ ตั้งค่า') : null
+  ].filter(Boolean));
+  var bar = el('div', { class:'navbar' }, [
+    el('div', { class:'brand' }, ['🎨 PPPLUSH']),
+    nav,
+    el('div', { class:'user-box' }, [
+      el('span', {}, [AppState.user.full_name + ' (' + AppState.user.role + ')']),
+      el('button', { class:'btn-logout', onclick: doLogout }, ['ออก'])
+    ])
+  ]);
+  shell.appendChild(el('div', { class:'app-shell' }, [bar, el('main', { id:'view' })]));
+}
+
+function navLink(href, text) {
+  return el('a', { href: href, 'data-base': href }, [text]);
+}
+
+async function doLogout() {
+  try { await API.logout(); } catch (e) {}
+  AppState.token = ''; AppState.user = null;
+  localStorage.removeItem('pp_token'); localStorage.removeItem('pp_user');
+  navigate('#/login');
+  renderShell();
+}
+
+/* ===== Pages ===== */
+
+function renderLogin() {
+  var app = $('#app');
+  app.innerHTML = '';
+  var wrap = el('div', { class:'login-wrap' });
+  var card = el('div', { class:'login-card' });
+  card.innerHTML =
+    '<h1>🎨 PPPLUSH</h1>' +
+    '<div class="subtitle">ระบบจัดการออเดอร์สีอุตสาหกรรม / สีรถยนต์</div>' +
+    '<form id="login-form">' +
+      '<div class="field"><label>Username</label><input name="username" required autofocus></div>' +
+      '<div class="field"><label>Password</label><input name="password" type="password" required></div>' +
+      '<button class="btn btn-primary" style="width:100%">เข้าสู่ระบบ</button>' +
+    '</form>';
+  wrap.appendChild(card);
+  app.appendChild(wrap);
+  $('#login-form').addEventListener('submit', async function (e) {
+    e.preventDefault();
+    var f = e.target;
+    try {
+      var res = await withLoader(API.login(f.username.value.trim(), f.password.value));
+      AppState.token = res.token; AppState.user = res.user;
+      localStorage.setItem('pp_token', res.token);
+      localStorage.setItem('pp_user', JSON.stringify(res.user));
+      renderShell();
+      navigate('#/dashboard');
+    } catch (err) {
+      toast(err.message || 'เข้าระบบไม่สำเร็จ', 'error');
+    }
+  });
+}
+
+async function renderDashboard() {
+  var v = $('#view'); v.innerHTML = '<div class="card"><div class="spinner"></div> กำลังโหลด...</div>';
+  var [stats, dueToday] = await Promise.all([API.getDashboardStats(), API.getTodayDue()]);
+  v.innerHTML = '';
+
+  var grid = el('div', { class:'stats-grid' }, [
+    tile('ทั้งหมด', stats.total),
+    tile('งานด่วน', stats.urgent, 'warn'),
+    tile('ส่งวันนี้', stats.dueToday, 'success'),
+    tile('เลย deadline', stats.overdue, 'danger'),
+    tile('Pre-Order ค้าง', stats.pendingPreOrders, 'warn')
+  ]);
+  v.appendChild(grid);
+
+  var statusGrid = el('div', { class:'stats-grid' }, Object.keys(stats.byStatus).map(function (k) {
+    return tile(k, stats.byStatus[k]);
+  }));
+  v.appendChild(el('div', { class:'card' }, [el('h3', {}, ['สถานะ']), statusGrid]));
+
+  // due today table
+  var dueCard = el('div', { class:'card' }, [el('h2', {}, ['📅 งานต้องส่งวันนี้ (' + dueToday.length + ')'])]);
+  if (!dueToday.length) {
+    dueCard.appendChild(el('p', { class:'muted' }, ['ไม่มีงานต้องส่งวันนี้']));
+  } else {
+    dueCard.appendChild(orderTable(dueToday));
+  }
+  v.appendChild(dueCard);
+}
+
+function tile(label, value, kind) {
+  return el('div', { class:'stat-tile ' + (kind||'') }, [
+    el('div', { class:'label' }, [label]),
+    el('div', { class:'value' }, [String(value)])
+  ]);
+}
+
+async function renderOrderList() {
+  var v = $('#view'); v.innerHTML = '';
+  var head = el('div', { class:'flex-between' }, [
+    el('h2', { class:'mb-0' }, ['📋 รายการใบงาน']),
+    el('div', { class:'flex gap-sm' }, [
+      el('input', { id:'q', placeholder:'ค้นหา order_no...', class:'field-input' }),
+      el('select', { id:'fstatus' }, [
+        el('option', { value:'' }, ['ทุกสถานะ']),
+        ...['DRAFT','WAITING_MATERIAL','IN_PRODUCTION','QC','READY','DELIVERED','CANCELLED'].map(function (s) {
+          return el('option', { value:s }, [s]);
+        })
+      ]),
+      el('button', { class:'btn btn-primary', onclick: function () { navigate('#/orders/new'); } }, ['+ ใหม่'])
+    ])
+  ]);
+  v.appendChild(head);
+  var card = el('div', { class:'card' });
+  v.appendChild(card);
+  async function reload() {
+    var filter = { q: $('#q').value, status: $('#fstatus').value };
+    var rows = await withLoader(API.listOrders(filter));
+    card.innerHTML = '';
+    if (!rows.length) card.appendChild(el('p', { class:'muted' }, ['ยังไม่มีใบงาน']));
+    else card.appendChild(orderTable(rows));
+  }
+  $('#q').addEventListener('input', debounce(reload, 300));
+  $('#fstatus').addEventListener('change', reload);
+  reload();
+}
+
+function debounce(fn, ms) { var t; return function () { var a = arguments; clearTimeout(t); t = setTimeout(function () { fn.apply(null, a); }, ms); }; }
+
+function orderTable(rows) {
+  var tb = el('table');
+  var thead = el('thead', {}, [el('tr', {}, ['No.','ลูกค้า','สถานะ','รับ','ส่ง','รวม','ด่วน',''].map(function (h) { return el('th', {}, [h]); }))]);
+  tb.appendChild(thead);
+  var tbody = el('tbody');
+  rows.forEach(function (o) {
+    var tr = el('tr', {}, [
+      el('td', {}, [el('a', { href:'#/orders/'+o.order_id }, [o.order_no || ''])]),
+      el('td', {}, [o.customer_name || '']),
+      el('td', { html: '<span class="chip chip-'+esc(o.status)+'">'+esc(o.status)+'</span>' }),
+      el('td', {}, [fmtDate(o.receive_date)]),
+      el('td', {}, [fmtDate(o.due_date)]),
+      el('td', {}, [String(o.total_qty || 0)]),
+      el('td', { html: isUrgent(o.urgent) ? '<span class="chip chip-urgent">URGENT</span>' : '' }),
+      el('td', {}, [el('a', { class:'btn btn-sm btn-secondary', href:'#/orders/'+o.order_id }, ['ดู'])])
+    ]);
+    tbody.appendChild(tr);
+  });
+  tb.appendChild(tbody);
+  return tb;
+}
+
+async function renderOrderForm() {
+  var v = $('#view'); v.innerHTML = '<div class="card">กำลังโหลด...</div>';
+  var [customers, products, materials] = await Promise.all([API.listCustomers(), API.listProducts(), API.listMaterials()]);
+  v.innerHTML = '';
+  var card = el('div', { class:'card' });
+  card.innerHTML =
+    '<h2>➕ สร้างใบงานใหม่</h2>' +
+    '<form id="order-form">' +
+      '<div class="field-row">' +
+        '<div class="field"><label>ลูกค้า *</label><select name="customer_id" required>' +
+          '<option value="">-- เลือก --</option>' +
+          customers.map(function (c) { return '<option value="'+esc(c.customer_id)+'">'+esc(c.name)+'</option>'; }).join('') +
+        '</select></div>' +
+        '<div class="field field-inline" style="padding-top:24px;"><input type="checkbox" name="urgent" id="urgent"><label for="urgent">งานด่วน (Urgent — Lead 2 วัน)</label></div>' +
+      '</div>' +
+      '<div class="field-row">' +
+        '<div class="field"><label>วันรับงาน</label><input type="date" name="receive_date" required></div>' +
+        '<div class="field"><label>วันส่ง (เว้นว่าง = คำนวณอัตโนมัติ)</label><input type="date" name="due_date"></div>' +
+      '</div>' +
+      '<div class="field"><label>หมายเหตุ</label><textarea name="note"></textarea></div>' +
+      '<h3>รายการสินค้า</h3>' +
+      '<div id="items"></div>' +
+      '<button type="button" class="btn btn-secondary btn-sm" id="add-item">+ เพิ่มรายการ</button>' +
+      '<h3 style="margin-top:24px;">วัตถุดิบที่ต้องใช้ (Pre-Order ถ้าสต็อกไม่พอ)</h3>' +
+      '<div id="mats"></div>' +
+      '<button type="button" class="btn btn-secondary btn-sm" id="add-mat">+ เพิ่มวัตถุดิบ</button>' +
+      '<div class="modal-actions"><button class="btn btn-primary">บันทึกใบงาน</button></div>' +
+    '</form>';
+  v.appendChild(card);
+  $('input[name=receive_date]', card).value = new Date().toISOString().slice(0,10);
+
+  function addItem() {
+    var row = el('div', { class:'item-row' });
+    row.innerHTML =
+      '<div class="field mb-0"><label>สินค้า</label><select name="i_product"><option value="">--</option>'+
+      products.map(function (p) { return '<option value="'+esc(p.product_id)+'" data-formula="'+esc(p.default_formula||'')+'">'+esc(p.name)+'</option>'; }).join('') + '</select></div>'+
+      '<div class="field mb-0"><label>จำนวน</label><input name="i_qty" type="number" step="0.01" value="1"></div>'+
+      '<div class="field mb-0"><label>หน่วย</label><input name="i_unit" value="L"></div>'+
+      '<div class="field mb-0"><label>สูตร</label><input name="i_formula" placeholder="เช่น RAL 9005"></div>'+
+      '<div class="field mb-0"><label>QC</label><select name="i_qc"><option value="true">ต้อง QC</option><option value="false">ไม่ต้อง</option></select></div>'+
+      '<button type="button" class="btn btn-sm btn-danger" onclick="this.parentNode.remove()">ลบ</button>';
+    row.querySelector('select[name=i_product]').addEventListener('change', function (e) {
+      var f = e.target.options[e.target.selectedIndex].getAttribute('data-formula');
+      if (f) row.querySelector('input[name=i_formula]').value = f;
+    });
+    $('#items').appendChild(row);
+  }
+  function addMat() {
+    var row = el('div', { class:'mat-row' });
+    row.innerHTML =
+      '<div class="field mb-0"><label>วัตถุดิบ</label><select name="m_id"><option value="">--</option>'+
+      materials.map(function (m) { return '<option value="'+esc(m.material_id)+'" data-stock="'+m.stock_qty+'">'+esc(m.name)+' (สต็อก: '+(m.stock_qty||0)+' '+esc(m.unit||'')+')</option>'; }).join('') + '</select></div>'+
+      '<div class="field mb-0"><label>จำนวนที่ต้องใช้</label><input name="m_qty" type="number" step="0.01" value="1"></div>'+
+      '<button type="button" class="btn btn-sm btn-danger" onclick="this.parentNode.remove()">ลบ</button>';
+    $('#mats').appendChild(row);
+  }
+  $('#add-item').addEventListener('click', addItem);
+  $('#add-mat').addEventListener('click', addMat);
+  addItem();
+
+  $('#order-form').addEventListener('submit', async function (e) {
+    e.preventDefault();
+    var f = e.target;
+    var items = $$('#items .item-row').map(function (r) {
+      return {
+        product_id: r.querySelector('select[name=i_product]').value,
+        qty: r.querySelector('input[name=i_qty]').value,
+        unit: r.querySelector('input[name=i_unit]').value,
+        formula_code: r.querySelector('input[name=i_formula]').value,
+        qc_required: r.querySelector('select[name=i_qc]').value === 'true'
+      };
+    }).filter(function (i) { return i.product_id; });
+    var mats = $$('#mats .mat-row').map(function (r) {
+      return { material_id: r.querySelector('select[name=m_id]').value, qty_needed: r.querySelector('input[name=m_qty]').value };
+    }).filter(function (m) { return m.material_id; });
+
+    if (!items.length) { toast('กรุณาเพิ่มรายการสินค้า', 'error'); return; }
+    var payload = {
+      customer_id: f.customer_id.value,
+      receive_date: f.receive_date.value,
+      due_date: f.due_date.value,
+      urgent: f.urgent.checked,
+      note: f.note.value,
+      items: items,
+      materials: mats
+    };
+    try {
+      var res = await withLoader(API.createOrder(payload));
+      toast('สร้างใบงาน ' + res.order_no + ' สำเร็จ', 'success');
+      navigate('#/orders/' + res.order_id);
+    } catch (err) { toast(err.message, 'error'); }
+  });
+}
+
+async function renderOrderDetail(orderId) {
+  var v = $('#view'); v.innerHTML = '<div class="card">กำลังโหลด...</div>';
+  var d = await withLoader(API.getOrder(orderId));
+  v.innerHTML = '';
+  var o = d.order;
+  var head = el('div', { class:'flex-between' }, [
+    el('h2', { class:'mb-0' }, [o.order_no + (isUrgent(o.urgent) ? ' ⚡' : '')]),
+    el('div', { class:'flex gap-sm' }, [
+      isSupervisorPlus() ? el('button', { class:'btn btn-secondary', onclick: function () { showStatusModal(o); } }, ['เปลี่ยนสถานะ']) : null,
+      el('a', { class:'btn btn-secondary', href:'#/orders/'+orderId+'/qc' }, ['QC']),
+      el('button', { class:'btn btn-secondary', onclick: function () { navigate('#/orders'); } }, ['← กลับ'])
+    ].filter(Boolean))
+  ]);
+  v.appendChild(head);
+
+  var info = el('div', { class:'card' });
+  info.innerHTML =
+    '<div class="field-row-3">' +
+      '<div><strong>สถานะ:</strong> <span class="chip chip-'+esc(o.status)+'">'+esc(o.status)+'</span></div>' +
+      '<div><strong>ลูกค้า:</strong> '+esc(d.customer ? d.customer.name : '-')+'</div>' +
+      '<div><strong>ติดต่อ:</strong> '+esc(d.customer ? (d.customer.contact_person+' '+d.customer.phone) : '')+'</div>' +
+      '<div><strong>วันรับ:</strong> '+esc(fmtDate(o.receive_date))+'</div>' +
+      '<div><strong>วันส่ง:</strong> '+esc(fmtDate(o.due_date))+'</div>' +
+      '<div><strong>รวม:</strong> '+(o.total_qty||0)+'</div>' +
+    '</div>' +
+    (o.note ? '<div class="mt-8"><strong>หมายเหตุ:</strong> '+esc(o.note)+'</div>' : '');
+  v.appendChild(info);
+
+  // items
+  var itemsCard = el('div', { class:'card' }, [el('h3', {}, ['รายการสินค้า'])]);
+  var tb = el('table');
+  tb.innerHTML = '<thead><tr><th>สินค้า</th><th>จำนวน</th><th>หน่วย</th><th>สูตร</th><th>QC</th></tr></thead>';
+  var tbody = el('tbody');
+  d.items.forEach(function (it) {
+    var tr = el('tr');
+    tr.innerHTML = '<td>'+esc(it.product ? it.product.name : '-')+'</td>'+
+      '<td>'+esc(it.qty)+'</td><td>'+esc(it.unit)+'</td>'+
+      '<td>'+esc(it.formula_code || '-')+'</td>'+
+      '<td>'+(it.qc_required === false || String(it.qc_required).toLowerCase()==='false' ? '-' : '✓')+'</td>';
+    tbody.appendChild(tr);
+  });
+  tb.appendChild(tbody);
+  itemsCard.appendChild(tb);
+  v.appendChild(itemsCard);
+
+  // preorders
+  if (d.preorders.length) {
+    var poCard = el('div', { class:'card' }, [el('h3', {}, ['📦 Pre-Order'])]);
+    var poTb = el('table');
+    poTb.innerHTML = '<thead><tr><th>วัตถุดิบ</th><th>ต้องใช้</th><th>มี</th><th>สถานะ</th><th>Supplier</th><th>ETA</th><th></th></tr></thead>';
+    var poBody = el('tbody');
+    d.preorders.forEach(function (p) {
+      var tr = el('tr');
+      tr.innerHTML = '<td>'+esc(p.material_id)+'</td><td>'+(p.qty_needed||0)+'</td><td>'+(p.qty_available||0)+'</td>'+
+        '<td><span class="chip chip-'+esc(p.status)+'">'+esc(p.status)+'</span></td>'+
+        '<td>'+esc(p.supplier||'')+'</td><td>'+esc(p.eta||'')+'</td><td></td>';
+      var actTd = tr.lastChild;
+      if (isSupervisorPlus() && p.status !== 'RECEIVED') {
+        var btn = el('button', { class:'btn btn-sm btn-success', onclick: async function () {
+          try { await withLoader(API.markPreOrderReceived(p.preorder_id)); toast('ทำเครื่องหมายรับแล้ว', 'success'); renderOrderDetail(orderId); } catch (e) { toast(e.message, 'error'); }
+        }}, ['รับแล้ว']);
+        actTd.appendChild(btn);
+      }
+      poBody.appendChild(tr);
+    });
+    poTb.appendChild(poBody);
+    poCard.appendChild(poTb);
+    v.appendChild(poCard);
+  }
+
+  // QC records
+  if (d.qc.length) {
+    var qcCard = el('div', { class:'card' }, [el('h3', {}, ['🧪 บันทึก QC'])]);
+    var qcTb = el('table');
+    qcTb.innerHTML = '<thead><tr><th>เวลา</th><th>L*</th><th>a*</th><th>b*</th><th>สูตรจริง</th><th>ผ่าน</th><th>หมายเหตุ</th></tr></thead>';
+    var qcBody = el('tbody');
+    d.qc.forEach(function (q) {
+      var tr = el('tr');
+      tr.innerHTML = '<td>'+esc(fmtDate(q.qc_at, true))+'</td>'+
+        '<td>'+esc(q.l_value)+'</td><td>'+esc(q.a_value)+'</td><td>'+esc(q.b_value)+'</td>'+
+        '<td>'+esc(q.formula_actual||'')+'</td>'+
+        '<td>'+(q.pass===true||String(q.pass).toLowerCase()==='true'?'✓':'✗')+'</td>'+
+        '<td>'+esc(q.remark||'')+'</td>';
+      qcBody.appendChild(tr);
+    });
+    qcTb.appendChild(qcBody);
+    qcCard.appendChild(qcTb);
+    v.appendChild(qcCard);
+  }
+
+  // attachments
+  var fileCard = el('div', { class:'card' }, [el('h3', {}, ['📎 ไฟล์แนบ'])]);
+  var fileList = el('div');
+  d.files.forEach(function (f) {
+    fileList.appendChild(el('div', { class:'flex', style:'margin-bottom:6px;' }, [
+      el('a', { href:'https://drive.google.com/file/d/'+f.drive_file_id+'/view', target:'_blank' }, [f.file_name]),
+      el('span', { class:'muted' }, [' — '+fmtDate(f.uploaded_at, true)])
+    ]));
+  });
+  fileCard.appendChild(fileList);
+  var fileInput = el('input', { type:'file', id:'file-up' });
+  var upBtn = el('button', { class:'btn btn-primary btn-sm', onclick: async function () {
+    var f = fileInput.files[0]; if (!f) { toast('เลือกไฟล์ก่อน', 'error'); return; }
+    if (f.size > 10*1024*1024) { toast('ไฟล์ใหญ่เกิน 10MB', 'error'); return; }
+    var reader = new FileReader();
+    reader.onload = async function () {
+      try { await withLoader(API.uploadFile(orderId, reader.result, f.name, f.type)); toast('อัปโหลดสำเร็จ','success'); renderOrderDetail(orderId); }
+      catch (e) { toast(e.message, 'error'); }
+    };
+    reader.readAsDataURL(f);
+  }}, ['อัปโหลด']);
+  fileCard.appendChild(el('div', { class:'flex mt-8' }, [fileInput, upBtn]));
+  v.appendChild(fileCard);
+
+  // status log
+  var logCard = el('div', { class:'card' }, [el('h3', {}, ['📜 ประวัติสถานะ'])]);
+  var logList = el('div');
+  d.logs.forEach(function (l) {
+    logList.appendChild(el('div', { style:'padding:6px 0;border-bottom:1px solid #eee;' }, [
+      el('span', { class:'muted' }, [fmtDate(l.changed_at, true) + ' — ']),
+      el('span', { html: '<span class="chip chip-'+esc(l.from_status||'')+'">'+esc(l.from_status||'-')+'</span> → <span class="chip chip-'+esc(l.to_status)+'">'+esc(l.to_status)+'</span>' }),
+      el('span', {}, [' ' + (l.remark || '')])
+    ]));
+  });
+  logCard.appendChild(logList);
+  v.appendChild(logCard);
+}
+
+function showStatusModal(o) {
+  var transitions = {
+    DRAFT: ['WAITING_MATERIAL', 'IN_PRODUCTION', 'CANCELLED'],
+    WAITING_MATERIAL: ['IN_PRODUCTION', 'CANCELLED'],
+    IN_PRODUCTION: ['QC', 'CANCELLED'],
+    QC: ['READY', 'IN_PRODUCTION', 'CANCELLED'],
+    READY: ['DELIVERED', 'CANCELLED']
+  };
+  var allowed = transitions[o.status] || [];
+  if (!allowed.length) { toast('ไม่สามารถเปลี่ยนสถานะจาก '+o.status+' ได้', 'error'); return; }
+  var content = el('div');
+  content.innerHTML = '<div class="field"><label>สถานะใหม่</label><select id="ns">' +
+    allowed.map(function (s) { return '<option value="'+s+'">'+s+'</option>'; }).join('') +
+    '</select></div><div class="field"><label>หมายเหตุ</label><textarea id="rmk"></textarea></div>';
+  modal('เปลี่ยนสถานะ', content, [
+    { label:'ยกเลิก' },
+    { label:'บันทึก', class:'btn-primary', onClick: async function () {
+      try {
+        await withLoader(API.changeStatus(o.order_id, content.querySelector('#ns').value, content.querySelector('#rmk').value));
+        toast('เปลี่ยนสถานะสำเร็จ', 'success'); renderOrderDetail(o.order_id);
+      } catch (e) { toast(e.message, 'error'); return false; }
+    }}
+  ]);
+}
+
+async function renderQC(orderId) {
+  if (!isSupervisorPlus()) { toast('สิทธิ์ไม่เพียงพอ', 'error'); navigate('#/orders/'+orderId); return; }
+  var v = $('#view'); v.innerHTML = '<div class="card">กำลังโหลด...</div>';
+  var d = await withLoader(API.getOrder(orderId));
+  v.innerHTML = '';
+  var card = el('div', { class:'card' });
+  card.innerHTML = '<h2>🧪 QC — '+esc(d.order.order_no)+'</h2><p class="muted">กรอกค่าสีจริงของแต่ละรายการ</p>';
+  v.appendChild(card);
+
+  d.items.forEach(function (it) {
+    var iCard = el('div', { class:'card' });
+    iCard.innerHTML =
+      '<h3>'+esc(it.product ? it.product.name : '-')+' — สูตร: '+esc(it.formula_code||'-')+'</h3>' +
+      '<form>' +
+        '<div class="field-row-3">' +
+          '<div class="field"><label>L*</label><input name="l" type="number" step="0.01"></div>' +
+          '<div class="field"><label>a*</label><input name="a" type="number" step="0.01"></div>' +
+          '<div class="field"><label>b*</label><input name="b" type="number" step="0.01"></div>' +
+        '</div>' +
+        '<div class="field"><label>สูตรที่ใช้จริง</label><input name="actual" placeholder="ระบุสูตรจริง"></div>' +
+        '<div class="field"><label>หมายเหตุ</label><textarea name="rmk"></textarea></div>' +
+        '<div class="flex gap-sm">' +
+          '<button class="btn btn-success" data-pass="1">บันทึก (ผ่าน)</button>' +
+          '<button class="btn btn-danger" data-pass="0">บันทึก (ไม่ผ่าน)</button>' +
+        '</div>' +
+      '</form>';
+    iCard.querySelector('form').addEventListener('submit', async function (e) {
+      e.preventDefault();
+      var pass = e.submitter && e.submitter.getAttribute('data-pass') === '1';
+      var f = e.target;
+      try {
+        await withLoader(API.submitQC({
+          order_id: orderId, item_id: it.item_id,
+          l_value: f.l.value, a_value: f.a.value, b_value: f.b.value,
+          formula_actual: f.actual.value, remark: f.rmk.value, pass: pass
+        }));
+        toast('บันทึก QC สำเร็จ', 'success');
+        renderQC(orderId);
+      } catch (err) { toast(err.message, 'error'); }
+    });
+    v.appendChild(iCard);
+  });
+}
+
+async function renderPreOrderList() {
+  var v = $('#view'); v.innerHTML = '';
+  v.appendChild(el('div', { class:'flex-between' }, [
+    el('h2', { class:'mb-0' }, ['📦 รายการ Pre-Order วัตถุดิบ']),
+    el('select', { id:'pof' }, [
+      el('option', { value:'' }, ['ทุกสถานะ']),
+      ...['PENDING','ORDERED','RECEIVED'].map(function (s) { return el('option', { value:s }, [s]); })
+    ])
+  ]));
+  var card = el('div', { class:'card' }); v.appendChild(card);
+  async function reload() {
+    var rows = await withLoader(API.listPreOrders({ status: $('#pof').value }));
+    card.innerHTML = '';
+    if (!rows.length) { card.appendChild(el('p', { class:'muted' }, ['ไม่มีรายการ'])); return; }
+    var tb = el('table');
+    tb.innerHTML = '<thead><tr><th>Order</th><th>วัตถุดิบ</th><th>ต้องใช้</th><th>มี</th><th>สถานะ</th><th>Supplier</th><th>ETA</th><th></th></tr></thead>';
+    var body = el('tbody');
+    rows.forEach(function (r) {
+      var tr = el('tr');
+      tr.innerHTML = '<td><a href="#/orders/'+esc(r.order_id)+'">'+esc(r.order_no||'')+'</a></td>'+
+        '<td>'+esc(r.material ? r.material.name : r.material_id)+'</td>'+
+        '<td>'+(r.qty_needed||0)+'</td><td>'+(r.qty_available||0)+'</td>'+
+        '<td><span class="chip chip-'+esc(r.status)+'">'+esc(r.status)+'</span></td>'+
+        '<td><input value="'+esc(r.supplier||'')+'" data-k="supplier" data-id="'+esc(r.preorder_id)+'" style="width:120px"></td>'+
+        '<td><input type="date" value="'+esc(r.eta||'')+'" data-k="eta" data-id="'+esc(r.preorder_id)+'"></td>'+
+        '<td></td>';
+      var actTd = tr.lastChild;
+      if (isSupervisorPlus() && r.status !== 'RECEIVED') {
+        actTd.appendChild(el('button', { class:'btn btn-sm btn-success', onclick: async function () {
+          try { await withLoader(API.markPreOrderReceived(r.preorder_id)); toast('รับแล้ว','success'); reload(); } catch(e){toast(e.message,'error');}
+        }}, ['รับแล้ว']));
+      }
+      body.appendChild(tr);
+    });
+    tb.appendChild(body); card.appendChild(tb);
+    $$('input[data-k]', card).forEach(function (inp) {
+      inp.addEventListener('change', async function () {
+        var patch = {}; patch[inp.getAttribute('data-k')] = inp.value;
+        try { await API.updatePreOrder(inp.getAttribute('data-id'), patch); toast('บันทึก','success'); }
+        catch (e) { toast(e.message, 'error'); }
+      });
+    });
+  }
+  $('#pof').addEventListener('change', reload);
+  reload();
+}
+
+/* ===== Master CRUD pages (generic) ===== */
+
+function masterPage(opts) {
+  return async function () {
+    var v = $('#view'); v.innerHTML = '';
+    v.appendChild(el('div', { class:'flex-between' }, [
+      el('h2', { class:'mb-0' }, [opts.title]),
+      isSupervisorPlus() ? el('button', { class:'btn btn-primary', onclick: function () { opts.editor(null, reload); } }, ['+ ใหม่']) : null
+    ].filter(Boolean)));
+    var card = el('div', { class:'card' }); v.appendChild(card);
+    async function reload() {
+      var rows = await withLoader(opts.list());
+      card.innerHTML = '';
+      if (!rows.length) { card.appendChild(el('p', { class:'muted' }, ['ไม่มีข้อมูล'])); return; }
+      var tb = el('table');
+      var ths = '<thead><tr>'+opts.cols.map(function (c){return '<th>'+esc(c.label)+'</th>';}).join('') + '<th></th></tr></thead>';
+      tb.innerHTML = ths;
+      var body = el('tbody');
+      rows.forEach(function (r) {
+        var tr = el('tr');
+        tr.innerHTML = opts.cols.map(function (c){return '<td>'+esc(r[c.key]==null?'':r[c.key])+'</td>';}).join('');
+        var actions = el('td', { class:'flex gap-sm' });
+        if (isSupervisorPlus()) {
+          actions.appendChild(el('button', { class:'btn btn-sm btn-secondary', onclick: function () { opts.editor(r, reload); } }, ['แก้']));
+        }
+        if (isAdmin() && opts.del) {
+          actions.appendChild(el('button', { class:'btn btn-sm btn-danger', onclick: function () { confirmModal('ลบ', 'ยืนยันการลบ?', async function () { try { await opts.del(r[opts.idKey]); toast('ลบแล้ว','success'); reload(); } catch (e) { toast(e.message,'error'); } }); } }, ['ลบ']));
+        }
+        tr.appendChild(actions);
+        body.appendChild(tr);
+      });
+      tb.appendChild(body);
+      card.appendChild(tb);
+    }
+    reload();
+  };
+}
+
+const renderCustomers = masterPage({
+  title: '👥 ลูกค้า',
+  list: function () { return API.listCustomers(); },
+  del: function (id) { return API.deleteCustomer(id); },
+  idKey: 'customer_id',
+  cols: [
+    { key:'name', label:'ชื่อ' },
+    { key:'contact_person', label:'ผู้ติดต่อ' },
+    { key:'phone', label:'โทร' },
+    { key:'address', label:'ที่อยู่' }
+  ],
+  editor: function (row, reload) {
+    var content = el('div');
+    content.innerHTML =
+      '<div class="field"><label>ชื่อ *</label><input id="f_name" value="'+esc(row?row.name:'')+'"></div>'+
+      '<div class="field"><label>ผู้ติดต่อ</label><input id="f_cp" value="'+esc(row?row.contact_person:'')+'"></div>'+
+      '<div class="field"><label>โทร</label><input id="f_ph" value="'+esc(row?row.phone:'')+'"></div>'+
+      '<div class="field"><label>ที่อยู่</label><textarea id="f_ad">'+esc(row?row.address:'')+'</textarea></div>'+
+      '<div class="field"><label>หมายเหตุ</label><textarea id="f_nt">'+esc(row?row.note:'')+'</textarea></div>';
+    modal(row?'แก้ไขลูกค้า':'เพิ่มลูกค้า', content, [
+      { label:'ยกเลิก' },
+      { label:'บันทึก', class:'btn-primary', onClick: async function () {
+        try {
+          await withLoader(API.upsertCustomer({
+            customer_id: row?row.customer_id:null,
+            name: content.querySelector('#f_name').value,
+            contact_person: content.querySelector('#f_cp').value,
+            phone: content.querySelector('#f_ph').value,
+            address: content.querySelector('#f_ad').value,
+            note: content.querySelector('#f_nt').value
+          }));
+          toast('บันทึก','success'); reload();
+        } catch (e) { toast(e.message,'error'); return false; }
+      }}
+    ]);
+  }
+});
+
+const renderProducts = masterPage({
+  title: '🎨 สินค้า / สี',
+  list: function () { return API.listProducts(); },
+  del: function (id) { return API.deleteProduct(id); },
+  idKey: 'product_id',
+  cols: [
+    { key:'code', label:'รหัส' },
+    { key:'name', label:'ชื่อ' },
+    { key:'type', label:'ประเภท' },
+    { key:'unit', label:'หน่วย' },
+    { key:'default_formula', label:'สูตรเริ่มต้น' }
+  ],
+  editor: function (row, reload) {
+    var content = el('div');
+    content.innerHTML =
+      '<div class="field-row">'+
+        '<div class="field"><label>รหัส</label><input id="f_code" value="'+esc(row?row.code:'')+'"></div>'+
+        '<div class="field"><label>หน่วย</label><input id="f_unit" value="'+esc(row?row.unit:'L')+'"></div>'+
+      '</div>'+
+      '<div class="field"><label>ชื่อ *</label><input id="f_name" value="'+esc(row?row.name:'')+'"></div>'+
+      '<div class="field"><label>ประเภท</label><select id="f_type"><option value="Industrial"'+(row&&row.type==='Industrial'?' selected':'')+'>สีอุตสาหกรรม</option><option value="Automotive"'+(row&&row.type==='Automotive'?' selected':'')+'>สีรถยนต์</option></select></div>'+
+      '<div class="field"><label>สูตรเริ่มต้น</label><input id="f_form" value="'+esc(row?row.default_formula:'')+'"></div>';
+    modal(row?'แก้ไขสินค้า':'เพิ่มสินค้า', content, [
+      { label:'ยกเลิก' },
+      { label:'บันทึก', class:'btn-primary', onClick: async function () {
+        try {
+          await withLoader(API.upsertProduct({
+            product_id: row?row.product_id:null,
+            code: content.querySelector('#f_code').value,
+            name: content.querySelector('#f_name').value,
+            type: content.querySelector('#f_type').value,
+            unit: content.querySelector('#f_unit').value,
+            default_formula: content.querySelector('#f_form').value
+          }));
+          toast('บันทึก','success'); reload();
+        } catch (e) { toast(e.message,'error'); return false; }
+      }}
+    ]);
+  }
+});
+
+const renderMaterials = masterPage({
+  title: '🧪 วัตถุดิบ',
+  list: function () { return API.listMaterials(); },
+  del: function (id) { return API.deleteMaterial(id); },
+  idKey: 'material_id',
+  cols: [
+    { key:'code', label:'รหัส' },
+    { key:'name', label:'ชื่อ' },
+    { key:'unit', label:'หน่วย' },
+    { key:'stock_qty', label:'สต็อก' },
+    { key:'reorder_point', label:'จุดสั่งซื้อ' }
+  ],
+  editor: function (row, reload) {
+    var content = el('div');
+    content.innerHTML =
+      '<div class="field-row">'+
+        '<div class="field"><label>รหัส</label><input id="f_code" value="'+esc(row?row.code:'')+'"></div>'+
+        '<div class="field"><label>หน่วย</label><input id="f_unit" value="'+esc(row?row.unit:'L')+'"></div>'+
+      '</div>'+
+      '<div class="field"><label>ชื่อ *</label><input id="f_name" value="'+esc(row?row.name:'')+'"></div>'+
+      '<div class="field-row">'+
+        '<div class="field"><label>สต็อก</label><input id="f_stock" type="number" step="0.01" value="'+esc(row?row.stock_qty:0)+'"></div>'+
+        '<div class="field"><label>จุดสั่งซื้อ</label><input id="f_rop" type="number" step="0.01" value="'+esc(row?row.reorder_point:0)+'"></div>'+
+      '</div>';
+    modal(row?'แก้ไขวัตถุดิบ':'เพิ่มวัตถุดิบ', content, [
+      { label:'ยกเลิก' },
+      { label:'บันทึก', class:'btn-primary', onClick: async function () {
+        try {
+          await withLoader(API.upsertMaterial({
+            material_id: row?row.material_id:null,
+            code: content.querySelector('#f_code').value,
+            name: content.querySelector('#f_name').value,
+            unit: content.querySelector('#f_unit').value,
+            stock_qty: content.querySelector('#f_stock').value,
+            reorder_point: content.querySelector('#f_rop').value
+          }));
+          toast('บันทึก','success'); reload();
+        } catch (e) { toast(e.message,'error'); return false; }
+      }}
+    ]);
+  }
+});
+
+/* ===== Users ===== */
+async function renderUsers() {
+  var v = $('#view'); v.innerHTML = '';
+  v.appendChild(el('div', { class:'flex-between' }, [
+    el('h2', { class:'mb-0' }, ['👤 ผู้ใช้']),
+    el('button', { class:'btn btn-primary', onclick: function () { userEditor(null, reload); } }, ['+ ใหม่'])
+  ]));
+  var card = el('div', { class:'card' }); v.appendChild(card);
+  async function reload() {
+    var rows = await withLoader(API.listUsers());
+    card.innerHTML = '';
+    var tb = el('table');
+    tb.innerHTML = '<thead><tr><th>Username</th><th>ชื่อ</th><th>Role</th><th>LINE ID</th><th>Active</th><th></th></tr></thead>';
+    var body = el('tbody');
+    rows.forEach(function (r) {
+      var tr = el('tr');
+      tr.innerHTML = '<td>'+esc(r.username)+'</td><td>'+esc(r.full_name)+'</td><td>'+esc(r.role)+'</td><td>'+esc(r.line_user_id||'')+'</td><td>'+(r.active===false||String(r.active).toLowerCase()==='false'?'❌':'✓')+'</td><td></td>';
+      var act = tr.lastChild;
+      act.appendChild(el('button', { class:'btn btn-sm btn-secondary', onclick: function () { userEditor(r, reload); } }, ['แก้']));
+      act.appendChild(el('button', { class:'btn btn-sm btn-secondary', style:'margin-left:4px;', onclick: function () { resetPwd(r); } }, ['Reset PW']));
+      body.appendChild(tr);
+    });
+    tb.appendChild(body); card.appendChild(tb);
+  }
+  reload();
+}
+function userEditor(row, reload) {
+  var content = el('div');
+  content.innerHTML =
+    '<div class="field"><label>Username *</label><input id="u_un" value="'+esc(row?row.username:'')+'"'+(row?' disabled':'')+'></div>'+
+    (!row ? '<div class="field"><label>Password *</label><input id="u_pw" type="password"></div>' : '')+
+    '<div class="field"><label>ชื่อ-สกุล</label><input id="u_fn" value="'+esc(row?row.full_name:'')+'"></div>'+
+    '<div class="field"><label>Role</label><select id="u_role">'+
+      ['Admin','Supervisor','User'].map(function (r){return '<option value="'+r+'"'+(row&&row.role===r?' selected':'')+'>'+r+'</option>';}).join('') +
+    '</select></div>'+
+    '<div class="field"><label>LINE User ID</label><input id="u_li" value="'+esc(row?row.line_user_id:'')+'"></div>'+
+    (row ? '<div class="field field-inline"><input type="checkbox" id="u_act"'+(row.active===false||String(row.active).toLowerCase()==='false'?'':' checked')+'><label for="u_act">Active</label></div>' : '');
+  modal(row?'แก้ไขผู้ใช้':'เพิ่มผู้ใช้', content, [
+    { label:'ยกเลิก' },
+    { label:'บันทึก', class:'btn-primary', onClick: async function () {
+      try {
+        if (row) {
+          await withLoader(API.updateUser(row.user_id, {
+            full_name: content.querySelector('#u_fn').value,
+            role: content.querySelector('#u_role').value,
+            line_user_id: content.querySelector('#u_li').value,
+            active: content.querySelector('#u_act').checked
+          }));
+        } else {
+          await withLoader(API.createUser({
+            username: content.querySelector('#u_un').value,
+            password: content.querySelector('#u_pw').value,
+            full_name: content.querySelector('#u_fn').value,
+            role: content.querySelector('#u_role').value,
+            line_user_id: content.querySelector('#u_li').value
+          }));
+        }
+        toast('บันทึก','success'); reload();
+      } catch (e) { toast(e.message,'error'); return false; }
+    }}
+  ]);
+}
+function resetPwd(row) {
+  var content = el('div');
+  content.innerHTML = '<div class="field"><label>Password ใหม่ (4+ ตัว)</label><input id="np" type="password"></div>';
+  modal('Reset Password — '+row.username, content, [
+    { label:'ยกเลิก' },
+    { label:'รีเซ็ต', class:'btn-danger', onClick: async function () {
+      try { await withLoader(API.resetPassword(row.user_id, content.querySelector('#np').value)); toast('Reset แล้ว','success'); }
+      catch (e) { toast(e.message,'error'); return false; }
+    }}
+  ]);
+}
+
+/* ===== Settings ===== */
+async function renderSettings() {
+  var v = $('#view'); v.innerHTML = '';
+  var rows = await withLoader(API.getSettings());
+  var card = el('div', { class:'card' }, [el('h2', {}, ['⚙️ ตั้งค่าระบบ'])]);
+  rows.forEach(function (r) {
+    var f = el('div', { class:'field' });
+    f.innerHTML = '<label>'+esc(r.key)+(r.masked?' <span class="muted">(masked — ใส่ใหม่เพื่อแก้)</span>':'')+'</label><div class="flex gap-sm"><input id="s_'+esc(r.key)+'" value="'+esc(r.masked?'':r.value)+'" placeholder="'+esc(r.masked?r.value:'')+'" style="flex:1"><button class="btn btn-primary btn-sm" data-k="'+esc(r.key)+'">บันทึก</button></div>';
+    card.appendChild(f);
+  });
+  v.appendChild(card);
+  $$('button[data-k]', card).forEach(function (b) {
+    b.addEventListener('click', async function () {
+      var k = b.getAttribute('data-k');
+      var val = card.querySelector('#s_'+k).value;
+      try { await withLoader(API.updateSetting(k, val)); toast('บันทึก','success'); renderSettings(); }
+      catch (e) { toast(e.message,'error'); }
+    });
+  });
+}
+</script>

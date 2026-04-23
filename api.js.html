@@ -1,0 +1,76 @@
+<script>
+/* ===== api.js — promisified google.script.run wrapper ===== */
+window.API = (function () {
+  function call(fn, args) {
+    return new Promise(function (resolve, reject) {
+      var runner = google.script.run
+        .withSuccessHandler(function (res) {
+          if (res && res.ok === false) reject(new Error(res.error || 'Error'));
+          else resolve(res && res.ok ? res.data : res);
+        })
+        .withFailureHandler(function (err) { reject(err); });
+      runner[fn].apply(runner, args || []);
+    });
+  }
+
+  function tokenized(fn) {
+    return function () {
+      var args = Array.prototype.slice.call(arguments);
+      args.unshift(window.AppState.token);
+      return call(fn, args);
+    };
+  }
+
+  return {
+    raw: call,
+    // Auth
+    login: function (u, p) { return call('login', [u, p]); },
+    logout: function () { return call('logout', [window.AppState.token]); },
+    getCurrentUser: function () { return call('getCurrentUser', [window.AppState.token]); },
+    // Settings
+    getSettings: tokenized('getSettings'),
+    updateSetting: tokenized('updateSetting'),
+    // Master
+    listCustomers: tokenized('listCustomers'),
+    upsertCustomer: tokenized('upsertCustomer'),
+    deleteCustomer: tokenized('deleteCustomer'),
+    listProducts: tokenized('listProducts'),
+    upsertProduct: tokenized('upsertProduct'),
+    deleteProduct: tokenized('deleteProduct'),
+    listMaterials: tokenized('listMaterials'),
+    upsertMaterial: tokenized('upsertMaterial'),
+    deleteMaterial: tokenized('deleteMaterial'),
+    // Orders
+    createOrder: tokenized('createOrder'),
+    listOrders: tokenized('listOrders'),
+    getOrder: tokenized('getOrder'),
+    updateOrder: tokenized('updateOrder'),
+    changeStatus: tokenized('changeStatus'),
+    cancelOrder: tokenized('cancelOrder'),
+    // Items
+    addOrderItem: tokenized('addOrderItem'),
+    updateOrderItem: tokenized('updateOrderItem'),
+    removeOrderItem: tokenized('removeOrderItem'),
+    // PreOrder
+    listPreOrders: tokenized('listPreOrders'),
+    markPreOrderReceived: tokenized('markPreOrderReceived'),
+    updatePreOrder: tokenized('updatePreOrder'),
+    // QC
+    submitQC: tokenized('submitQC'),
+    getQCByOrder: tokenized('getQCByOrder'),
+    // Files
+    uploadFile: tokenized('uploadFile'),
+    listFiles: tokenized('listFiles'),
+    deleteFile: tokenized('deleteFile'),
+    // Users
+    listUsers: tokenized('listUsers'),
+    createUser: tokenized('createUser'),
+    updateUser: tokenized('updateUser'),
+    resetPassword: tokenized('resetPassword'),
+    changeOwnPassword: tokenized('changeOwnPassword'),
+    // Dashboard
+    getDashboardStats: tokenized('getDashboardStats'),
+    getTodayDue: tokenized('getTodayDue')
+  };
+})();
+</script>
