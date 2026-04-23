@@ -1,0 +1,9 @@
+# clasp push: ignore everything by default, then allowlist Apps Script files only.
+# This prevents docs/ (browser frontend) from being uploaded as .gs server-side code.
+
+**/**
+
+# Allow only Apps Script backend files
+!appsscript.json
+!*.gs
+!*.html
