@@ -317,16 +317,14 @@
       el('a', { class: 'btn btn-primary', href: '#/orders/new', html: icon('plus') + '<span>สร้างใบงาน</span>' })
     ]));
 
-    const [stats, dueToday, customers, products] = await Promise.all([
-      API.getDashboardStats(),
-      API.getTodayDue(),
-      API.listCustomers(),
-      API.listProducts()
-    ]);
+    // Single bundle call instead of 4 separate fetches
+    const bundle = await API.getDashboardBundle();
+    const stats = bundle.stats;
+    const dueToday = bundle.dueToday;
 
     // First-time onboarding card (when no orders yet)
     if (stats.total === 0) {
-      v.appendChild(buildOnboardingCard(customers.length, products.length));
+      v.appendChild(buildOnboardingCard(bundle.counts.customers, bundle.counts.products));
     }
 
     v.appendChild(statsGrid([
@@ -447,7 +445,8 @@
 
     async function reload() {
       const filter = { q: $('#q').value, status: $('#fstatus').value };
-      const rows = await withLoader(API.listOrders(filter));
+      // Use bundle endpoint — joined customer name in one call
+      const rows = await withLoader(API.getOrderListBundle(filter));
       card.innerHTML = '';
       if (!rows.length) card.appendChild(emptyState('ยังไม่มีใบงาน', 'คลิก "สร้างใบงาน" เพื่อเริ่มต้น', 'orders'));
       else card.appendChild(orderTable(rows));
@@ -491,7 +490,11 @@
   async function renderOrderForm() {
     const v = $('#view');
     v.innerHTML = '<div class="card"><div class="spinner"></div> กำลังโหลด...</div>';
-    const [customers, products, materials] = await Promise.all([API.listCustomers(), API.listProducts(), API.listMaterials()]);
+    // Single bundle call instead of 3 separate fetches
+    const bundle = await API.getOrderFormBundle();
+    const customers = bundle.customers;
+    const products = bundle.products;
+    const materials = bundle.materials;
     v.innerHTML = '';
 
     v.appendChild(el('div', { class: 'page-head' }, [

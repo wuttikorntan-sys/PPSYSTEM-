@@ -38,12 +38,20 @@ function objToRow_(headers, obj) {
 }
 
 function getAll_(sheetName) {
+  // Try cache first (5-min TTL, invalidated on writes)
+  const cached = cacheGet_('all:' + sheetName);
+  if (cached) return cached;
   const sh = sheet_(sheetName);
   const lastRow = sh.getLastRow();
-  if (lastRow < 2) return [];
+  if (lastRow < 2) {
+    cacheSet_('all:' + sheetName, []);
+    return [];
+  }
   const headers = getHeaders_(sheetName);
   const values = sh.getRange(2, 1, lastRow - 1, headers.length).getValues();
-  return values.map(function (r) { return rowToObj_(headers, r); });
+  const result = values.map(function (r) { return rowToObj_(headers, r); });
+  cacheSet_('all:' + sheetName, result);
+  return result;
 }
 
 function findBy_(sheetName, key, value) {
@@ -61,6 +69,7 @@ function appendRow_(sheetName, obj) {
   const headers = getHeaders_(sheetName);
   const row = objToRow_(headers, obj);
   sh.appendRow(row);
+  cacheInvalidate_(sheetName);
   return obj;
 }
 
@@ -78,6 +87,7 @@ function updateById_(sheetName, idColumn, idValue, patch) {
       Object.keys(patch).forEach(function (k) { merged[k] = patch[k]; });
       const newRow = objToRow_(headers, merged);
       sh.getRange(i + 2, 1, 1, headers.length).setValues([newRow]);
+      cacheInvalidate_(sheetName);
       return merged;
     }
   }
@@ -95,6 +105,7 @@ function deleteById_(sheetName, idColumn, idValue) {
   for (let i = 0; i < data.length; i++) {
     if (String(data[i][idIdx]) === String(idValue)) {
       sh.deleteRow(i + 2);
+      cacheInvalidate_(sheetName);
       return true;
     }
   }

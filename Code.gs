@@ -86,7 +86,11 @@ const API_REGISTRY = {
   changeOwnPassword: changeOwnPassword,
   // Dashboard
   getDashboardStats: getDashboardStats,
-  getTodayDue: getTodayDue
+  getTodayDue: getTodayDue,
+  // Bundle endpoints (faster — one call instead of many)
+  getDashboardBundle: getDashboardBundle,
+  getOrderFormBundle: getOrderFormBundle,
+  getOrderListBundle: getOrderListBundle
 };
 
 /** Included from HTML via <?!= include('styles.css') ?> (legacy embedded UI) */

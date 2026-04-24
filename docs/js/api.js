@@ -101,6 +101,10 @@
     changeOwnPassword: tokenized('changeOwnPassword'),
     // Dashboard
     getDashboardStats: tokenized('getDashboardStats'),
-    getTodayDue: tokenized('getTodayDue')
+    getTodayDue: tokenized('getTodayDue'),
+    // Bundle endpoints (1 call instead of many)
+    getDashboardBundle: tokenized('getDashboardBundle'),
+    getOrderFormBundle: tokenized('getOrderFormBundle'),
+    getOrderListBundle: tokenized('getOrderListBundle')
   };
 })();
