@@ -118,6 +118,7 @@
      ==================================================================== */
   function renderSetup() {
     const app = $('#app');
+    app.className = '';
     app.innerHTML = '';
     const page = el('div', { class: 'login-page' });
     const card = el('div', { class: 'login-card', style: { maxWidth: '520px' } });
@@ -159,6 +160,7 @@
      ==================================================================== */
   function renderLogin() {
     const app = $('#app');
+    app.className = '';
     app.innerHTML = '';
     const page = el('div', { class: 'login-page' });
     const card = el('div', { class: 'login-card' });
@@ -216,6 +218,7 @@
   function renderShell() {
     const app = $('#app');
     if ($('#sidebar', app) && $('#view', app)) return; // already rendered
+    app.className = 'app';
     app.innerHTML = '';
 
     const navGroups = [
