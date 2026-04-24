@@ -382,24 +382,59 @@
       { done: numProducts > 0, label: 'เพิ่มสินค้า / สูตรสีอย่างน้อย 1 รายการ', href: '#/products', icon: 'palette' },
       { done: false, label: 'สร้างใบงานแรก', href: '#/orders/new', icon: 'plus' }
     ];
-    const card = el('div', { class: 'card', style: { background: 'linear-gradient(135deg, #4f46e5, #06b6d4)', color: '#fff', border: 'none' } });
+    const card = el('div', {
+      class: 'card',
+      style: {
+        background: 'linear-gradient(135deg, #f97316 0%, #ea580c 50%, #c2410c 100%)',
+        color: '#fff',
+        border: 'none',
+        boxShadow: '0 16px 40px rgba(249,115,22,0.35), 0 0 60px rgba(249,115,22,0.15)',
+        position: 'relative',
+        overflow: 'hidden'
+      }
+    });
+    // Decorative glow blobs
     card.innerHTML =
-      '<h2 style="color:#fff;margin-bottom:6px;">🎉 ยินดีต้อนรับสู่ระบบ PPPLUSH</h2>' +
-      '<p style="opacity:0.9;margin-bottom:18px;">ทำตามขั้นตอนต่อไปนี้เพื่อเริ่มใช้งาน</p>';
-    const list = el('div', { style: { display: 'grid', gap: '10px' } });
+      '<div style="position:absolute;top:-50px;right:-50px;width:200px;height:200px;background:radial-gradient(circle,rgba(251,191,36,0.4),transparent 70%);border-radius:50%;pointer-events:none;"></div>' +
+      '<div style="position:absolute;bottom:-30px;left:-30px;width:160px;height:160px;background:radial-gradient(circle,rgba(255,255,255,0.15),transparent 70%);border-radius:50%;pointer-events:none;"></div>' +
+      '<div style="position:relative;">' +
+      '<h2 style="color:#fff;margin-bottom:6px;font-size:22px;font-weight:800;letter-spacing:-0.02em;">🎉 ยินดีต้อนรับสู่ PPPLUSH</h2>' +
+      '<p style="opacity:0.95;margin-bottom:22px;font-size:14px;">ทำตามขั้นตอนต่อไปนี้เพื่อเริ่มใช้งาน</p>' +
+      '</div>';
+    const list = el('div', { style: { display: 'grid', gap: '10px', position: 'relative' } });
     steps.forEach(function (s, i) {
       const item = el('a', {
         href: s.href,
-        style: { display: 'flex', alignItems: 'center', gap: '14px', padding: '12px 14px', background: 'rgba(255,255,255,0.15)', borderRadius: '10px', color: '#fff', textDecoration: 'none', transition: 'background 150ms' }
+        style: {
+          display: 'flex',
+          alignItems: 'center',
+          gap: '14px',
+          padding: '14px 16px',
+          background: 'rgba(0,0,0,0.25)',
+          backdropFilter: 'blur(10px)',
+          borderRadius: '12px',
+          color: '#fff',
+          textDecoration: 'none',
+          transition: 'all 200ms cubic-bezier(0.16, 1, 0.3, 1)',
+          border: '1px solid rgba(255,255,255,0.12)'
+        }
       });
-      item.addEventListener('mouseenter', function () { item.style.background = 'rgba(255,255,255,0.25)'; });
-      item.addEventListener('mouseleave', function () { item.style.background = 'rgba(255,255,255,0.15)'; });
+      item.addEventListener('mouseenter', function () {
+        item.style.background = 'rgba(0,0,0,0.4)';
+        item.style.transform = 'translateX(6px)';
+        item.style.borderColor = 'rgba(255,255,255,0.3)';
+      });
+      item.addEventListener('mouseleave', function () {
+        item.style.background = 'rgba(0,0,0,0.25)';
+        item.style.transform = 'translateX(0)';
+        item.style.borderColor = 'rgba(255,255,255,0.12)';
+      });
       item.innerHTML =
-        '<div style="width:32px;height:32px;border-radius:50%;background:' + (s.done ? 'rgba(16,185,129,0.9)' : 'rgba(255,255,255,0.2)') + ';display:flex;align-items:center;justify-content:center;font-weight:700;">' +
-          (s.done ? icon('check', { size: 16 }) : String(i + 1)) +
+        '<div style="width:36px;height:36px;border-radius:50%;background:' + (s.done ? 'rgba(34,197,94,0.95)' : 'rgba(255,255,255,0.18)') + ';display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;flex-shrink:0;' + (s.done ? 'box-shadow:0 0 12px rgba(34,197,94,0.5);' : '') + '">' +
+          (s.done ? icon('check', { size: 18 }) : String(i + 1)) +
         '</div>' +
-        '<div style="flex:1;font-weight:500;">' + esc(s.label) + '</div>' +
-        '<div style="opacity:0.8;">' + icon('arrow-right', { size: 16 }) + '</div>';
+        '<div style="flex:1;font-weight:600;font-size:14px;">' + esc(s.label) + '</div>' +
+        '<div style="opacity:0.85;">' + icon('arrow-right', { size: 18 }) + '</div>';
       list.appendChild(item);
     });
     card.appendChild(list);
@@ -409,13 +444,16 @@
   function statsGrid(tiles) {
     const g = el('div', { class: 'stats-grid' });
     tiles.forEach(function (t) {
+      const valueEl = el('div', { class: 'stat-value' }, ['0']);
       g.appendChild(el('div', { class: 'stat-tile ' + (t.kind || '') }, [
-        el('div', { class: 'stat-icon', html: icon(t.icon, { size: 20 }) }),
+        el('div', { class: 'stat-icon', html: icon(t.icon, { size: 22 }) }),
         el('div', { class: 'stat-content' }, [
-          el('div', { class: 'stat-value' }, [String(t.value)]),
+          valueEl,
           el('div', { class: 'stat-label' }, [t.label])
         ])
       ]));
+      // Animate count-up after the tile is in DOM
+      setTimeout(function () { countUp(valueEl, t.value); }, 100);
     });
     return g;
   }

@@ -144,4 +144,56 @@
       text ? el('div', { class: 'empty-text' }, [text]) : null
     ]);
   };
+
+  /* Animated count-up for stat values. Triggered on element insertion. */
+  window.countUp = function (target, finalValue, duration) {
+    const end = Number(finalValue) || 0;
+    if (end === 0) { target.textContent = '0'; return; }
+    const dur = duration || 800;
+    const start = performance.now();
+    function frame(now) {
+      const t = Math.min(1, (now - start) / dur);
+      // easeOutCubic
+      const eased = 1 - Math.pow(1 - t, 3);
+      const v = Math.round(end * eased);
+      target.textContent = v.toLocaleString('en-US');
+      if (t < 1) requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  };
+
+  /* Mouse-tracking radial highlight on buttons (sets --rx/--ry CSS vars) */
+  document.addEventListener('mousemove', function (e) {
+    const t = e.target.closest('.btn');
+    if (!t) return;
+    const rect = t.getBoundingClientRect();
+    t.style.setProperty('--rx', ((e.clientX - rect.left) / rect.width * 100) + '%');
+    t.style.setProperty('--ry', ((e.clientY - rect.top) / rect.height * 100) + '%');
+  });
+
+  /* Ripple effect on button click */
+  document.addEventListener('click', function (e) {
+    const btn = e.target.closest('.btn');
+    if (!btn || btn.disabled) return;
+    const rect = btn.getBoundingClientRect();
+    const r = document.createElement('span');
+    const size = Math.max(rect.width, rect.height);
+    r.style.cssText =
+      'position:absolute;border-radius:50%;background:rgba(255,255,255,0.5);' +
+      'pointer-events:none;width:' + size + 'px;height:' + size + 'px;' +
+      'left:' + (e.clientX - rect.left - size / 2) + 'px;' +
+      'top:' + (e.clientY - rect.top - size / 2) + 'px;' +
+      'transform:scale(0);opacity:1;' +
+      'animation:rippleAnim 600ms cubic-bezier(0.4,0,0.2,1) forwards;';
+    btn.appendChild(r);
+    setTimeout(function () { r.remove(); }, 650);
+  });
+
+  /* Inject ripple keyframe (only once) */
+  if (!document.getElementById('pp-ripple-style')) {
+    const s = document.createElement('style');
+    s.id = 'pp-ripple-style';
+    s.textContent = '@keyframes rippleAnim { to { transform: scale(2.5); opacity: 0; } }';
+    document.head.appendChild(s);
+  }
 })();
