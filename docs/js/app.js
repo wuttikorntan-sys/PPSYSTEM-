@@ -311,13 +311,23 @@
     const v = $('#view');
     v.appendChild(el('div', { class: 'page-head' }, [
       el('div', {}, [
-        el('h1', {}, ['ภาพรวม']),
-        el('div', { class: 'page-subtitle' }, ['สรุปสถานะออเดอร์และงานเร่งด่วน'])
+        el('h1', {}, ['สวัสดี ' + (AppState.user.full_name || AppState.user.username) + ' 👋']),
+        el('div', { class: 'page-subtitle' }, ['ภาพรวมออเดอร์และงานเร่งด่วน'])
       ]),
       el('a', { class: 'btn btn-primary', href: '#/orders/new', html: icon('plus') + '<span>สร้างใบงาน</span>' })
     ]));
 
-    const [stats, dueToday] = await Promise.all([API.getDashboardStats(), API.getTodayDue()]);
+    const [stats, dueToday, customers, products] = await Promise.all([
+      API.getDashboardStats(),
+      API.getTodayDue(),
+      API.listCustomers(),
+      API.listProducts()
+    ]);
+
+    // First-time onboarding card (when no orders yet)
+    if (stats.total === 0) {
+      v.appendChild(buildOnboardingCard(customers.length, products.length));
+    }
 
     v.appendChild(statsGrid([
       { label: 'ทั้งหมด', value: stats.total, icon: 'orders', kind: '' },
@@ -366,6 +376,36 @@
       'DELIVERED': 'truck',
       'CANCELLED': 'x'
     }[s] || 'orders';
+  }
+
+  function buildOnboardingCard(numCustomers, numProducts) {
+    const steps = [
+      { done: numCustomers > 0, label: 'เพิ่มลูกค้าอย่างน้อย 1 ราย', href: '#/customers', icon: 'building' },
+      { done: numProducts > 0, label: 'เพิ่มสินค้า / สูตรสีอย่างน้อย 1 รายการ', href: '#/products', icon: 'palette' },
+      { done: false, label: 'สร้างใบงานแรก', href: '#/orders/new', icon: 'plus' }
+    ];
+    const card = el('div', { class: 'card', style: { background: 'linear-gradient(135deg, #4f46e5, #06b6d4)', color: '#fff', border: 'none' } });
+    card.innerHTML =
+      '<h2 style="color:#fff;margin-bottom:6px;">🎉 ยินดีต้อนรับสู่ระบบ PPPLUSH</h2>' +
+      '<p style="opacity:0.9;margin-bottom:18px;">ทำตามขั้นตอนต่อไปนี้เพื่อเริ่มใช้งาน</p>';
+    const list = el('div', { style: { display: 'grid', gap: '10px' } });
+    steps.forEach(function (s, i) {
+      const item = el('a', {
+        href: s.href,
+        style: { display: 'flex', alignItems: 'center', gap: '14px', padding: '12px 14px', background: 'rgba(255,255,255,0.15)', borderRadius: '10px', color: '#fff', textDecoration: 'none', transition: 'background 150ms' }
+      });
+      item.addEventListener('mouseenter', function () { item.style.background = 'rgba(255,255,255,0.25)'; });
+      item.addEventListener('mouseleave', function () { item.style.background = 'rgba(255,255,255,0.15)'; });
+      item.innerHTML =
+        '<div style="width:32px;height:32px;border-radius:50%;background:' + (s.done ? 'rgba(16,185,129,0.9)' : 'rgba(255,255,255,0.2)') + ';display:flex;align-items:center;justify-content:center;font-weight:700;">' +
+          (s.done ? icon('check', { size: 16 }) : String(i + 1)) +
+        '</div>' +
+        '<div style="flex:1;font-weight:500;">' + esc(s.label) + '</div>' +
+        '<div style="opacity:0.8;">' + icon('arrow-right', { size: 16 }) + '</div>';
+      list.appendChild(item);
+    });
+    card.appendChild(list);
+    return card;
   }
 
   function statsGrid(tiles) {
@@ -458,6 +498,23 @@
       el('div', {}, [el('h1', {}, ['สร้างใบงานใหม่']), el('div', { class: 'page-subtitle' }, ['กรอกข้อมูลออเดอร์ลูกค้า'])]),
       el('a', { class: 'btn btn-secondary', href: '#/orders', html: icon('arrow-left') + '<span>กลับ</span>' })
     ]));
+
+    // Block if no customers or products yet
+    if (!customers.length || !products.length) {
+      const blockCard = el('div', { class: 'card' });
+      blockCard.innerHTML =
+        '<div class="empty">' +
+          '<div class="empty-icon">' + icon('alert', { size: 28 }) + '</div>' +
+          '<div class="empty-title">ยังเริ่มสร้างใบงานไม่ได้</div>' +
+          '<div class="empty-text mb-4">กรุณาเพิ่มข้อมูลพื้นฐานก่อน</div>' +
+          '<div class="flex gap-2" style="justify-content:center;">' +
+            (!customers.length ? '<a class="btn btn-primary" href="#/customers">' + icon('building') + '<span>เพิ่มลูกค้า</span></a>' : '') +
+            (!products.length ? '<a class="btn btn-primary" href="#/products">' + icon('palette') + '<span>เพิ่มสินค้า</span></a>' : '') +
+          '</div>' +
+        '</div>';
+      v.appendChild(blockCard);
+      return;
+    }
 
     const card = el('div', { class: 'card' });
     card.innerHTML =
