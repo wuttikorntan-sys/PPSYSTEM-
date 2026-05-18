@@ -88,6 +88,7 @@
       }
     }
     if (!location.hash || location.hash === '#') location.hash = '#/dashboard';
+    startKeepWarm(); // pings Apps Script every 4 min to avoid cold-start latency
     route();
   }
 
@@ -317,10 +318,18 @@
       el('a', { class: 'btn btn-primary', href: '#/orders/new', html: icon('plus') + '<span>สร้างใบงาน</span>' })
     ]));
 
-    // Single bundle call instead of 4 separate fetches
+    // Show skeleton immediately (perceived speed)
+    const skel = el('div');
+    skel.appendChild(skeletonGrid(5));
+    skel.appendChild(skeletonCard());
+    v.appendChild(skel);
+
+    // Single bundle call instead of 4 separate fetches (60s frontend cache)
     const bundle = await API.getDashboardBundle();
     const stats = bundle.stats;
     const dueToday = bundle.dueToday;
+
+    skel.remove();
 
     // First-time onboarding card (when no orders yet)
     if (stats.total === 0) {
@@ -483,7 +492,9 @@
 
     async function reload() {
       const filter = { q: $('#q').value, status: $('#fstatus').value };
-      // Use bundle endpoint — joined customer name in one call
+      card.innerHTML = '';
+      card.appendChild(skeletonRows(6));
+      // Use bundle endpoint — joined customer name in one call (60s frontend cache)
       const rows = await withLoader(API.getOrderListBundle(filter));
       card.innerHTML = '';
       if (!rows.length) card.appendChild(emptyState('ยังไม่มีใบงาน', 'คลิก "สร้างใบงาน" เพื่อเริ่มต้น', 'orders'));
@@ -527,8 +538,8 @@
      ==================================================================== */
   async function renderOrderForm() {
     const v = $('#view');
-    v.innerHTML = '<div class="card"><div class="spinner"></div> กำลังโหลด...</div>';
-    // Single bundle call instead of 3 separate fetches
+    v.appendChild(skeletonCard());
+    // Single bundle call (60s frontend cache)
     const bundle = await API.getOrderFormBundle();
     const customers = bundle.customers;
     const products = bundle.products;
@@ -563,10 +574,7 @@
         '<h3 class="card-title mb-4">ข้อมูลทั่วไป</h3>' +
         '<div class="field-row">' +
           '<div class="field"><label class="field-label">ลูกค้า <span class="required">*</span></label>' +
-            '<select class="field-select" name="customer_id" required>' +
-              '<option value="">-- เลือกลูกค้า --</option>' +
-              customers.map(function (c) { return '<option value="' + esc(c.customer_id) + '">' + esc(c.name) + '</option>'; }).join('') +
-            '</select></div>' +
+            '<div id="customer-select-mount"></div></div>' +
           '<div class="field"><label class="field-label">ประเภทงาน</label>' +
             '<div class="field-inline"><input type="checkbox" name="urgent" id="urgent"><label for="urgent">งานด่วน (Urgent — Lead 2 วัน)</label></div></div>' +
         '</div>' +
@@ -588,6 +596,15 @@
         '</div>' +
       '</form>';
     v.appendChild(card);
+
+    // Mount searchable customer select (better than native dropdown for many customers)
+    const customerSelect = searchableSelect({
+      placeholder: 'พิมพ์ค้นหาลูกค้า...',
+      options: customers.map(function (c) {
+        return { value: c.customer_id, label: c.name, sub: [c.contact_person, c.phone].filter(Boolean).join(' · ') };
+      })
+    });
+    $('#customer-select-mount').appendChild(customerSelect);
 
     function productOpts() {
       return '<option value="">-- เลือกสินค้า --</option>' +
@@ -655,9 +672,12 @@
       }).filter(function (m) { return m.material_id; });
       if (!items.length) { toast('กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการ', 'error'); return; }
 
+      const customerId = customerSelect.getValue();
+      if (!customerId) { toast('กรุณาเลือกลูกค้า', 'error'); return; }
+
       try {
         const res = await withLoader(API.createOrder({
-          customer_id: f.customer_id.value,
+          customer_id: customerId,
           receive_date: f.receive_date.value,
           due_date: f.due_date.value,
           urgent: f.urgent.checked,
@@ -676,7 +696,8 @@
      ==================================================================== */
   async function renderOrderDetail(orderId) {
     const v = $('#view');
-    v.innerHTML = '<div class="card"><div class="spinner"></div> กำลังโหลด...</div>';
+    v.appendChild(skeletonCard());
+    v.appendChild(skeletonCard());
     const d = await withLoader(API.getOrder(orderId));
     v.innerHTML = '';
     const o = d.order;
@@ -808,26 +829,34 @@
     fileCard.appendChild(fileList);
 
     const uploadLabel = el('label', { class: 'upload-zone' }, [
-      el('div', { html: icon('upload', { size: 24 }) }),
-      el('div', { class: 'mt-2' }, ['คลิกเพื่อเลือกไฟล์ หรือลากวาง']),
-      el('div', { class: 'text-sm' }, ['สูงสุด 10MB'])
+      el('div', { html: icon('upload', { size: 28 }) }),
+      el('div', { class: 'mt-2', style: { fontWeight: '600' } }, ['ลากไฟล์มาวางที่นี่ หรือคลิกเพื่อเลือก']),
+      el('div', { class: 'text-sm mt-2' }, ['รองรับสูงสุด 10MB ต่อไฟล์'])
     ]);
-    const fileInput = el('input', { type: 'file', onChange: async function (e) {
-      const f = e.target.files[0]; if (!f) return;
-      if (f.size > 10 * 1024 * 1024) { toast('ไฟล์ใหญ่เกิน 10MB', 'error'); return; }
+    async function uploadOne(f) {
+      if (f.size > 10 * 1024 * 1024) { toast('ไฟล์ "' + f.name + '" ใหญ่เกิน 10MB', 'error'); return; }
       const reader = new FileReader();
-      reader.onload = async function () {
-        try {
-          await withLoader(API.uploadFile(orderId, reader.result, f.name, f.type));
-          toast('อัปโหลดสำเร็จ', 'success');
-          renderOrderDetail(orderId);
-        } catch (err) { toast(err.message, 'error'); }
-      };
-      reader.readAsDataURL(f);
-    }});
+      return new Promise(function (resolve) {
+        reader.onload = async function () {
+          try {
+            await withLoader(API.uploadFile(orderId, reader.result, f.name, f.type), { fullscreen: true });
+            toast('อัปโหลด ' + f.name + ' สำเร็จ', 'success');
+          } catch (err) { toast(err.message, 'error'); }
+          resolve();
+        };
+        reader.readAsDataURL(f);
+      });
+    }
+    async function handleFiles(files) {
+      for (const f of files) await uploadOne(f);
+      renderOrderDetail(orderId);
+    }
+    const fileInput = el('input', { type: 'file', multiple: true, onChange: function (e) { handleFiles(e.target.files); } });
     uploadLabel.appendChild(fileInput);
     fileCard.appendChild(uploadLabel);
     v.appendChild(fileCard);
+    // Drag-and-drop support
+    attachDropZone(uploadLabel, handleFiles);
 
     // Status log
     const logCard = el('div', { class: 'card' });
@@ -1291,7 +1320,7 @@
     const body = el('div');
     body.innerHTML = '<div class="field"><label class="field-label">Password ใหม่ (อย่างน้อย 4 ตัว)</label><input class="field-input" id="np" type="password"></div>';
     modal({
-      title: 'Reset Password — ' + row.username,
+      title: 'Reset Password — ' + esc(row.username),
       body: body,
       actions: [
         { label: 'ยกเลิก' },

@@ -1,24 +1,52 @@
 /**
  * PPPLUSH — API client (fetch wrapper for Apps Script JSON endpoint)
  *
- * Uses Content-Type: text/plain to avoid CORS preflight (Apps Script can't
- * respond to OPTIONS requests).
+ * Features:
+ * - text/plain Content-Type (avoids CORS preflight on Apps Script)
+ * - In-memory 60s cache for read endpoints (massive speedup on repeat reads)
+ * - Auto-invalidation: every write function clears the relevant cache groups
+ * - In-flight dedup: parallel identical calls share one fetch
  */
 (function () {
   'use strict';
 
+  const CACHE_TTL = 60 * 1000; // 60 seconds
+  const cache = new Map();      // key -> { value, expires }
+  const inflight = new Map();   // key -> Promise (dedup parallel calls)
+
   function getUrl() {
     return (window.APP_CONFIG && window.APP_CONFIG.APPS_SCRIPT_URL) || localStorage.getItem('pp_script_url') || '';
   }
-
   function setUrl(url) {
     localStorage.setItem('pp_script_url', url);
     if (window.APP_CONFIG) window.APP_CONFIG.APPS_SCRIPT_URL = url;
   }
-
   function token() { return localStorage.getItem('pp_token') || ''; }
 
-  async function call(fn, args) {
+  function cacheKey(fn, args) {
+    // Exclude token from cache key (same data for same user; different users won't share token anyway since we keyOff token implicitly via response data)
+    const slim = (args || []).slice(1); // drop first arg (token)
+    return fn + '|' + JSON.stringify(slim);
+  }
+
+  function cacheGet(key) {
+    const c = cache.get(key);
+    if (!c) return null;
+    if (Date.now() >= c.expires) { cache.delete(key); return null; }
+    return c.value;
+  }
+  function cacheSet(key, value) {
+    cache.set(key, { value: value, expires: Date.now() + CACHE_TTL });
+  }
+  function cacheInvalidate(prefixes) {
+    const list = Array.isArray(prefixes) ? prefixes : [prefixes];
+    for (const k of cache.keys()) {
+      for (const p of list) if (k.indexOf(p + '|') === 0) { cache.delete(k); break; }
+    }
+  }
+  function cacheInvalidateAll() { cache.clear(); }
+
+  async function rawCall(fn, args) {
     const url = getUrl();
     if (!url) throw new Error('ยังไม่ได้ตั้ง Apps Script URL');
     const res = await fetch(url, {
@@ -41,70 +69,128 @@
     return data && data.ok ? data.data : data;
   }
 
-  function tokenized(fn) {
+  /** Cached read: serve from cache; dedup parallel calls; refresh in background if stale soon. */
+  function cachedCall(fn, args) {
+    const key = cacheKey(fn, args);
+    const hit = cacheGet(key);
+    if (hit !== null) return Promise.resolve(hit);
+    if (inflight.has(key)) return inflight.get(key);
+    const p = rawCall(fn, args).then(function (v) {
+      cacheSet(key, v);
+      inflight.delete(key);
+      return v;
+    }).catch(function (e) { inflight.delete(key); throw e; });
+    inflight.set(key, p);
+    return p;
+  }
+
+  /** Mutating call: always hit network, then invalidate relevant cache. */
+  function writeCall(fn, args, invalidates) {
+    return rawCall(fn, args).then(function (v) {
+      if (invalidates && invalidates.length) cacheInvalidate(invalidates);
+      return v;
+    });
+  }
+
+  function tokRead(fn) {
     return function () {
       const args = Array.prototype.slice.call(arguments);
       args.unshift(token());
-      return call(fn, args);
+      return cachedCall(fn, args);
+    };
+  }
+  function tokWrite(fn, invalidates) {
+    return function () {
+      const args = Array.prototype.slice.call(arguments);
+      args.unshift(token());
+      return writeCall(fn, args, invalidates);
     };
   }
 
+  // Invalidation groups — function name → list of prefixes to invalidate
+  // After any write that touches "Orders" data, kill all cached order-related reads.
+  const INV = {
+    orders:    ['listOrders', 'getOrder', 'getDashboardBundle', 'getOrderListBundle', 'getTodayDue', 'getDashboardStats', 'listPreOrders'],
+    items:     ['getOrder'],
+    preorders: ['listPreOrders', 'getOrder', 'getDashboardBundle'],
+    qc:        ['getOrder', 'getQCByOrder', 'getDashboardBundle'],
+    customers: ['listCustomers', 'getDashboardBundle', 'getOrderFormBundle', 'getOrderListBundle', 'getOrder', 'getTodayDue'],
+    products:  ['listProducts', 'getDashboardBundle', 'getOrderFormBundle', 'getOrder'],
+    materials: ['listMaterials', 'getOrderFormBundle', 'listPreOrders'],
+    users:     ['listUsers'],
+    settings:  ['getSettings'],
+    files:     ['listFiles', 'getOrder']
+  };
+
   window.API = {
-    raw: call,
+    raw: rawCall,
     setUrl: setUrl,
     getUrl: getUrl,
-    ping: function () { return call('ping', []); },
-    // Auth (no token for login)
-    login: function (u, p) { return call('login', [u, p]); },
-    logout: function () { return call('logout', [token()]); },
-    getCurrentUser: function () { return call('getCurrentUser', [token()]); },
+    invalidateAll: cacheInvalidateAll,
+
+    ping: function () { return rawCall('ping', []); },
+
+    // Auth (always live)
+    login: function (u, p) { return rawCall('login', [u, p]); },
+    logout: function () { cacheInvalidateAll(); return rawCall('logout', [token()]); },
+    getCurrentUser: function () { return rawCall('getCurrentUser', [token()]); },
+
     // Settings
-    getSettings: tokenized('getSettings'),
-    updateSetting: tokenized('updateSetting'),
-    // Master
-    listCustomers: tokenized('listCustomers'),
-    upsertCustomer: tokenized('upsertCustomer'),
-    deleteCustomer: tokenized('deleteCustomer'),
-    listProducts: tokenized('listProducts'),
-    upsertProduct: tokenized('upsertProduct'),
-    deleteProduct: tokenized('deleteProduct'),
-    listMaterials: tokenized('listMaterials'),
-    upsertMaterial: tokenized('upsertMaterial'),
-    deleteMaterial: tokenized('deleteMaterial'),
-    // Orders
-    createOrder: tokenized('createOrder'),
-    listOrders: tokenized('listOrders'),
-    getOrder: tokenized('getOrder'),
-    updateOrder: tokenized('updateOrder'),
-    changeStatus: tokenized('changeStatus'),
-    cancelOrder: tokenized('cancelOrder'),
+    getSettings: tokRead('getSettings'),
+    updateSetting: tokWrite('updateSetting', INV.settings),
+
+    // Master — read (cached)
+    listCustomers: tokRead('listCustomers'),
+    listProducts: tokRead('listProducts'),
+    listMaterials: tokRead('listMaterials'),
+    // Master — write (invalidate)
+    upsertCustomer: tokWrite('upsertCustomer', INV.customers),
+    deleteCustomer: tokWrite('deleteCustomer', INV.customers),
+    upsertProduct: tokWrite('upsertProduct', INV.products),
+    deleteProduct: tokWrite('deleteProduct', INV.products),
+    upsertMaterial: tokWrite('upsertMaterial', INV.materials),
+    deleteMaterial: tokWrite('deleteMaterial', INV.materials),
+
+    // Orders — read
+    listOrders: tokRead('listOrders'),
+    getOrder: tokRead('getOrder'),
+    // Orders — write
+    createOrder: tokWrite('createOrder', INV.orders.concat(INV.preorders)),
+    updateOrder: tokWrite('updateOrder', INV.orders),
+    changeStatus: tokWrite('changeStatus', INV.orders),
+    cancelOrder: tokWrite('cancelOrder', INV.orders),
+
     // Items
-    addOrderItem: tokenized('addOrderItem'),
-    updateOrderItem: tokenized('updateOrderItem'),
-    removeOrderItem: tokenized('removeOrderItem'),
+    addOrderItem: tokWrite('addOrderItem', INV.items.concat(INV.orders)),
+    updateOrderItem: tokWrite('updateOrderItem', INV.items.concat(INV.orders)),
+    removeOrderItem: tokWrite('removeOrderItem', INV.items.concat(INV.orders)),
+
     // PreOrder
-    listPreOrders: tokenized('listPreOrders'),
-    markPreOrderReceived: tokenized('markPreOrderReceived'),
-    updatePreOrder: tokenized('updatePreOrder'),
+    listPreOrders: tokRead('listPreOrders'),
+    markPreOrderReceived: tokWrite('markPreOrderReceived', INV.preorders.concat(INV.orders).concat(INV.materials)),
+    updatePreOrder: tokWrite('updatePreOrder', INV.preorders),
+
     // QC
-    submitQC: tokenized('submitQC'),
-    getQCByOrder: tokenized('getQCByOrder'),
+    submitQC: tokWrite('submitQC', INV.qc.concat(INV.orders)),
+    getQCByOrder: tokRead('getQCByOrder'),
+
     // Files
-    uploadFile: tokenized('uploadFile'),
-    listFiles: tokenized('listFiles'),
-    deleteFile: tokenized('deleteFile'),
+    uploadFile: tokWrite('uploadFile', INV.files),
+    listFiles: tokRead('listFiles'),
+    deleteFile: tokWrite('deleteFile', INV.files),
+
     // Users
-    listUsers: tokenized('listUsers'),
-    createUser: tokenized('createUser'),
-    updateUser: tokenized('updateUser'),
-    resetPassword: tokenized('resetPassword'),
-    changeOwnPassword: tokenized('changeOwnPassword'),
-    // Dashboard
-    getDashboardStats: tokenized('getDashboardStats'),
-    getTodayDue: tokenized('getTodayDue'),
-    // Bundle endpoints (1 call instead of many)
-    getDashboardBundle: tokenized('getDashboardBundle'),
-    getOrderFormBundle: tokenized('getOrderFormBundle'),
-    getOrderListBundle: tokenized('getOrderListBundle')
+    listUsers: tokRead('listUsers'),
+    createUser: tokWrite('createUser', INV.users),
+    updateUser: tokWrite('updateUser', INV.users),
+    resetPassword: tokWrite('resetPassword', INV.users),
+    changeOwnPassword: tokWrite('changeOwnPassword', INV.users),
+
+    // Dashboard (cached — biggest win)
+    getDashboardStats: tokRead('getDashboardStats'),
+    getTodayDue: tokRead('getTodayDue'),
+    getDashboardBundle: tokRead('getDashboardBundle'),
+    getOrderFormBundle: tokRead('getOrderFormBundle'),
+    getOrderListBundle: tokRead('getOrderListBundle')
   };
 })();

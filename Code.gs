@@ -10,11 +10,18 @@
  */
 
 function doGet(e) {
-  const tmpl = HtmlService.createTemplateFromFile('index');
-  return tmpl.evaluate()
-    .setTitle('PPPLUSH — ระบบจัดการออเดอร์สี')
-    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
-    .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+  // UI lives on GitHub Pages; this endpoint is JSON-only via doPost.
+  // Return a small landing page that redirects there for anyone hitting /exec directly.
+  const pagesUrl = 'https://wuttikorntan-sys.github.io/PPSYSTEM-/';
+  const html =
+    '<!DOCTYPE html><html lang="th"><head><meta charset="utf-8">' +
+    '<meta http-equiv="refresh" content="0;url=' + pagesUrl + '">' +
+    '<title>PPPLUSH</title>' +
+    '<style>body{font-family:system-ui,sans-serif;background:#060606;color:#fafafa;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;text-align:center;}a{color:#f97316;font-weight:600;}</style>' +
+    '</head><body><div><h2>🎨 PPPLUSH</h2><p>กำลังพาไปยัง <a href="' + pagesUrl + '">' + pagesUrl + '</a></p></div></body></html>';
+  return HtmlService.createHtmlOutput(html)
+    .setTitle('PPPLUSH')
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
 function doPost(e) {
@@ -93,12 +100,7 @@ const API_REGISTRY = {
   getOrderListBundle: getOrderListBundle
 };
 
-/** Included from HTML via <?!= include('styles.css') ?> (legacy embedded UI) */
-function include(filename) {
-  return HtmlService.createHtmlOutputFromFile(filename).getContent();
-}
-
 /** Health check */
 function ping() {
-  return ok_({ time: nowIso_(), version: 'v1' });
+  return ok_({ time: nowIso_(), version: 'v2' });
 }

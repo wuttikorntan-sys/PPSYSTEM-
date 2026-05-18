@@ -76,26 +76,89 @@
     return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
   };
 
-  /* Toast */
+  /* Toast — auto-dismiss after 3.5s, click to dismiss immediately */
   window.toast = function (message, kind) {
     const c = $('#toasts');
     const t = el('div', { class: 'toast ' + (kind || 'info') }, [
       el('div', { class: 'toast-icon', html: icon(kind === 'success' ? 'check-circle' : kind === 'error' ? 'alert' : 'bell') }),
       el('div', { class: 'flex-1' }, [String(message)])
     ]);
-    c.appendChild(t);
-    setTimeout(function () {
+    function dismiss() {
       t.style.opacity = '0';
       t.style.transform = 'translateX(20px)';
       t.style.transition = 'all 200ms';
       setTimeout(function () { t.remove(); }, 200);
-    }, 3500);
+    }
+    t.addEventListener('click', dismiss);
+    c.appendChild(t);
+    setTimeout(dismiss, 3500);
   };
 
-  /* Loader */
+  /* Top progress bar — replaces fullscreen loader (much snappier feel) */
+  let _progressEl = null;
+  let _progressActive = 0;
+  function ensureProgressEl() {
+    if (_progressEl) return _progressEl;
+    _progressEl = el('div', { id: 'top-progress', class: 'top-progress' });
+    document.body.appendChild(_progressEl);
+    return _progressEl;
+  }
+  window.startProgress = function () {
+    const bar = ensureProgressEl();
+    _progressActive++;
+    bar.classList.remove('complete');
+    bar.classList.add('active');
+    // staged progress (looks like nprogress)
+    bar.style.transform = 'scaleX(0.15)';
+    requestAnimationFrame(function () {
+      setTimeout(function () { bar.style.transform = 'scaleX(0.5)'; }, 80);
+      setTimeout(function () { bar.style.transform = 'scaleX(0.72)'; }, 350);
+      setTimeout(function () { bar.style.transform = 'scaleX(0.85)'; }, 900);
+    });
+  };
+  window.endProgress = function () {
+    const bar = ensureProgressEl();
+    _progressActive = Math.max(0, _progressActive - 1);
+    if (_progressActive > 0) return;
+    bar.classList.add('complete');
+    setTimeout(function () {
+      bar.classList.remove('active', 'complete');
+      bar.style.transform = 'scaleX(0)';
+    }, 450);
+  };
+
+  /* Fullscreen loader (kept for backward compat, mainly login + heavy file uploads) */
   window.showLoader = function () { $('#loader').classList.remove('hidden'); };
   window.hideLoader = function () { $('#loader').classList.add('hidden'); };
-  window.withLoader = async function (p) { showLoader(); try { return await p; } finally { hideLoader(); } };
+
+  /* withLoader uses the snappier top progress bar by default; opt into full-screen with 2nd arg */
+  window.withLoader = async function (p, opts) {
+    if (opts && opts.fullscreen) {
+      showLoader();
+      try { return await p; } finally { hideLoader(); }
+    }
+    startProgress();
+    try { return await p; } finally { endProgress(); }
+  };
+
+  /* Skeleton helpers */
+  window.skeletonGrid = function (count, kind) {
+    const wrap = el('div', { class: 'stats-grid' });
+    for (let i = 0; i < (count || 5); i++) {
+      wrap.appendChild(el('div', { class: 'skeleton skeleton-' + (kind || 'tile') }));
+    }
+    return wrap;
+  };
+  window.skeletonRows = function (count) {
+    const wrap = el('div', { style: { padding: '14px' } });
+    for (let i = 0; i < (count || 5); i++) {
+      wrap.appendChild(el('div', { class: 'skeleton skeleton-row' }));
+    }
+    return wrap;
+  };
+  window.skeletonCard = function () {
+    return el('div', { class: 'card', style: { padding: '0' } }, [el('div', { class: 'skeleton skeleton-card' })]);
+  };
 
   /* Modal */
   window.modal = function (opts) {
@@ -196,4 +259,137 @@
     s.textContent = '@keyframes rippleAnim { to { transform: scale(2.5); opacity: 0; } }';
     document.head.appendChild(s);
   }
+
+  /* ============================================================
+     Searchable select (typeahead) — for big customer/product lists
+     options: [{ value, label, sub? }]
+     onChange(value): callback
+     placeholder: input placeholder text
+     initial: pre-selected value
+     ============================================================ */
+  window.searchableSelect = function (opts) {
+    const items = opts.options || [];
+    let selected = opts.initial || '';
+    let activeIdx = -1;
+    const wrap = el('div', { class: 'ss-wrap' });
+    const input = el('input', {
+      type: 'text', class: 'ss-input',
+      placeholder: opts.placeholder || 'พิมพ์เพื่อค้นหา...',
+      autocomplete: 'off'
+    });
+    const panel = el('div', { class: 'ss-panel' });
+    wrap.appendChild(input);
+    wrap.appendChild(panel);
+
+    function findItem(v) { return items.find(function (x) { return x.value === v; }); }
+    function setSelected(v) {
+      selected = v;
+      const it = findItem(v);
+      input.value = it ? it.label : '';
+      input.dataset.value = v;
+      if (opts.onChange) opts.onChange(v);
+    }
+    function renderOptions(filter) {
+      panel.innerHTML = '';
+      const q = (filter || '').toLowerCase().trim();
+      const filtered = q
+        ? items.filter(function (i) { return i.label.toLowerCase().indexOf(q) >= 0 || (i.sub && i.sub.toLowerCase().indexOf(q) >= 0); })
+        : items;
+      if (!filtered.length) {
+        panel.appendChild(el('div', { class: 'ss-empty' }, ['ไม่พบรายการ']));
+        return;
+      }
+      filtered.forEach(function (it, idx) {
+        const isSelected = it.value === selected;
+        const optEl = el('div', {
+          class: 'ss-option' + (isSelected ? ' selected' : '') + (idx === activeIdx ? ' active' : ''),
+          onClick: function (e) { e.stopPropagation(); setSelected(it.value); close(); }
+        }, [
+          el('div', {}, [it.label]),
+          it.sub ? el('div', { class: 'ss-sub' }, [it.sub]) : null
+        ]);
+        panel.appendChild(optEl);
+      });
+    }
+    function open() {
+      wrap.classList.add('open');
+      renderOptions('');
+      input.select();
+    }
+    function close() {
+      wrap.classList.remove('open');
+      activeIdx = -1;
+      // restore label if user typed but didn't select
+      const it = findItem(selected);
+      input.value = it ? it.label : '';
+    }
+    input.addEventListener('focus', open);
+    input.addEventListener('click', open);
+    input.addEventListener('input', function () { activeIdx = -1; renderOptions(input.value); });
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { close(); return; }
+      const visibleOpts = $$('.ss-option', panel);
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        activeIdx = Math.min(visibleOpts.length - 1, activeIdx + 1);
+        renderOptions(input.value);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        activeIdx = Math.max(0, activeIdx - 1);
+        renderOptions(input.value);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        const sel = visibleOpts[activeIdx];
+        if (sel) sel.click();
+      }
+    });
+    document.addEventListener('click', function (e) {
+      if (!wrap.contains(e.target)) close();
+    });
+    if (selected) setSelected(selected);
+    wrap.getValue = function () { return selected; };
+    wrap.setValue = setSelected;
+    wrap.setOptions = function (newItems) { items.splice(0, items.length, ...newItems); renderOptions(input.value); };
+    return wrap;
+  };
+
+  /* ============================================================
+     Drag-and-drop helper: attaches drag handlers to an upload zone
+     ============================================================ */
+  window.attachDropZone = function (zoneEl, onFiles) {
+    ['dragenter', 'dragover'].forEach(function (evt) {
+      zoneEl.addEventListener(evt, function (e) {
+        e.preventDefault(); e.stopPropagation();
+        zoneEl.classList.add('dragover');
+      });
+    });
+    ['dragleave', 'drop'].forEach(function (evt) {
+      zoneEl.addEventListener(evt, function (e) {
+        e.preventDefault(); e.stopPropagation();
+        if (evt === 'dragleave' && zoneEl.contains(e.relatedTarget)) return;
+        zoneEl.classList.remove('dragover');
+      });
+    });
+    zoneEl.addEventListener('drop', function (e) {
+      const files = e.dataTransfer && e.dataTransfer.files;
+      if (files && files.length && onFiles) onFiles(files);
+    });
+  };
+
+  /* ============================================================
+     Keep Apps Script warm — ping every 4 min while tab is visible
+     Cold start = ~2s; warm = ~500ms
+     ============================================================ */
+  let _warmTimer = null;
+  window.startKeepWarm = function () {
+    if (_warmTimer) return;
+    _warmTimer = setInterval(function () {
+      if (document.visibilityState !== 'visible') return;
+      if (!localStorage.getItem('pp_token')) return;
+      API.ping().catch(function () {});
+    }, 4 * 60 * 1000);
+  };
+  window.stopKeepWarm = function () {
+    if (_warmTimer) { clearInterval(_warmTimer); _warmTimer = null; }
+  };
 })();
