@@ -551,22 +551,8 @@
       el('a', { class: 'btn btn-secondary', href: '#/orders', html: icon('arrow-left') + '<span>กลับ</span>' })
     ]));
 
-    // Block if no customers or products yet
-    if (!customers.length || !products.length) {
-      const blockCard = el('div', { class: 'card' });
-      blockCard.innerHTML =
-        '<div class="empty">' +
-          '<div class="empty-icon">' + icon('alert', { size: 28 }) + '</div>' +
-          '<div class="empty-title">ยังเริ่มสร้างใบงานไม่ได้</div>' +
-          '<div class="empty-text mb-4">กรุณาเพิ่มข้อมูลพื้นฐานก่อน</div>' +
-          '<div class="flex gap-2" style="justify-content:center;">' +
-            (!customers.length ? '<a class="btn btn-primary" href="#/customers">' + icon('building') + '<span>เพิ่มลูกค้า</span></a>' : '') +
-            (!products.length ? '<a class="btn btn-primary" href="#/products">' + icon('palette') + '<span>เพิ่มสินค้า</span></a>' : '') +
-          '</div>' +
-        '</div>';
-      v.appendChild(blockCard);
-      return;
-    }
+    // Note: customer/product/material can be added inline from the dropdowns,
+    // so no need to block when database is empty.
 
     const card = el('div', { class: 'card' });
     card.innerHTML =
@@ -597,33 +583,81 @@
       '</form>';
     v.appendChild(card);
 
-    // Mount searchable customer select (better than native dropdown for many customers)
-    const customerSelect = searchableSelect({
-      placeholder: 'พิมพ์ค้นหาลูกค้า...',
-      options: customers.map(function (c) {
+    // Mount searchable customer select (with inline-add support)
+    function customerOptions() {
+      return customers.map(function (c) {
         return { value: c.customer_id, label: c.name, sub: [c.contact_person, c.phone].filter(Boolean).join(' · ') };
-      })
+      });
+    }
+    const customerSelect = searchableSelect({
+      placeholder: 'พิมพ์ค้นหาลูกค้า หรือเพิ่มใหม่...',
+      options: customerOptions(),
+      onAdd: function (query) {
+        quickAddCustomer(query, function (newCust) {
+          customers.push(newCust);
+          customerSelect.setOptions(customerOptions());
+          customerSelect.setValue(newCust.customer_id);
+        });
+      }
     });
     $('#customer-select-mount').appendChild(customerSelect);
 
-    function productOpts() {
-      return '<option value="">-- เลือกสินค้า --</option>' +
-        products.map(function (p) {
-          return '<option value="' + esc(p.product_id) + '" data-formula="' + esc(p.default_formula || '') + '">' + esc(p.name) + '</option>';
-        }).join('');
+    function quickAddCustomer(hintName, cb) {
+      const body = el('div');
+      body.innerHTML =
+        '<div class="field"><label class="field-label">ชื่อลูกค้า <span class="required">*</span></label><input class="field-input" id="qc_name" value="' + esc(hintName || '') + '" autofocus></div>' +
+        '<div class="field-row">' +
+          '<div class="field"><label class="field-label">ผู้ติดต่อ</label><input class="field-input" id="qc_cp"></div>' +
+          '<div class="field"><label class="field-label">โทร</label><input class="field-input" id="qc_ph"></div>' +
+        '</div>' +
+        '<div class="field"><label class="field-label">ที่อยู่</label><textarea class="field-textarea" id="qc_ad"></textarea></div>';
+      modal({
+        title: '+ เพิ่มลูกค้าใหม่',
+        body: body,
+        actions: [
+          { label: 'ยกเลิก' },
+          { label: 'บันทึก', class: 'btn-primary', onClick: async function () {
+            const name = body.querySelector('#qc_name').value.trim();
+            if (!name) { toast('กรุณากรอกชื่อลูกค้า', 'error'); return false; }
+            try {
+              const newC = await withLoader(API.upsertCustomer({
+                name: name,
+                contact_person: body.querySelector('#qc_cp').value,
+                phone: body.querySelector('#qc_ph').value,
+                address: body.querySelector('#qc_ad').value
+              }));
+              toast('เพิ่มลูกค้าสำเร็จ', 'success');
+              cb(newC);
+            } catch (e) { toast(e.message, 'error'); return false; }
+          } }
+        ]
+      });
     }
-    function materialOpts() {
-      return '<option value="">-- เลือกวัตถุดิบ --</option>' +
-        materials.map(function (m) {
-          return '<option value="' + esc(m.material_id) + '">' + esc(m.name) + ' (สต็อก: ' + (m.stock_qty || 0) + ' ' + esc(m.unit || '') + ')</option>';
-        }).join('');
+
+    function productOptions() {
+      return products.map(function (p) {
+        return {
+          value: p.product_id,
+          label: p.name,
+          sub: [p.code, p.type === 'Automotive' ? 'สีรถยนต์' : 'สีอุตสาหกรรม', p.default_formula].filter(Boolean).join(' · ')
+        };
+      });
+    }
+    function materialOptions() {
+      return materials.map(function (m) {
+        return {
+          value: m.material_id,
+          label: m.name,
+          sub: [m.code, 'สต็อก: ' + (m.stock_qty || 0) + ' ' + (m.unit || '')].filter(Boolean).join(' · ')
+        };
+      });
     }
 
     function addItem() {
       const row = el('div', { class: 'item-card' });
       row.innerHTML =
         '<div class="field-row" style="grid-template-columns:2fr 1fr 1fr;">' +
-          '<div class="field"><label class="field-label">สินค้า</label><select class="field-select" data-k="product_id">' + productOpts() + '</select></div>' +
+          '<div class="field"><label class="field-label">สินค้า</label><div data-mount="product"></div></div>' +
           '<div class="field"><label class="field-label">จำนวน</label><input class="field-input" type="number" step="0.01" data-k="qty" value="1"></div>' +
           '<div class="field"><label class="field-label">หน่วย</label><input class="field-input" data-k="unit" value="L"></div>' +
         '</div>' +
@@ -632,21 +666,126 @@
           '<div class="field"><label class="field-label">QC</label><select class="field-select" data-k="qc_required"><option value="true">ต้อง QC</option><option value="false">ไม่ต้อง</option></select></div>' +
         '</div>' +
         '<button type="button" class="icon-btn remove-btn" title="ลบ" onclick="this.parentNode.remove()">' + icon('trash') + '</button>';
-      row.querySelector('select[data-k="product_id"]').addEventListener('change', function (e) {
-        const f = e.target.options[e.target.selectedIndex].getAttribute('data-formula');
-        if (f) row.querySelector('input[data-k="formula_code"]').value = f;
+
+      const ps = searchableSelect({
+        placeholder: 'พิมพ์ค้นหาสินค้า หรือเพิ่มใหม่...',
+        options: productOptions(),
+        onChange: function (v) {
+          const p = products.find(function (x) { return x.product_id === v; });
+          if (p && p.default_formula) row.querySelector('input[data-k="formula_code"]').value = p.default_formula;
+        },
+        onAdd: function (query) {
+          quickAddProduct(query, function (newProduct) {
+            products.push(newProduct);
+            $$('#items .item-card').forEach(function (r) {
+              if (r._productSelect && r._productSelect.setOptions) r._productSelect.setOptions(productOptions());
+            });
+            ps.setValue(newProduct.product_id);
+          });
+        }
       });
+      row.querySelector('[data-mount="product"]').appendChild(ps);
+      row._productSelect = ps;
       $('#items').appendChild(row);
     }
+
     function addMat() {
       const row = el('div', { class: 'item-card' });
       row.innerHTML =
         '<div class="field-row" style="grid-template-columns:3fr 1fr;">' +
-          '<div class="field"><label class="field-label">วัตถุดิบ</label><select class="field-select" data-k="material_id">' + materialOpts() + '</select></div>' +
+          '<div class="field"><label class="field-label">วัตถุดิบ</label><div data-mount="material"></div></div>' +
           '<div class="field"><label class="field-label">จำนวน</label><input class="field-input" type="number" step="0.01" data-k="qty_needed" value="1"></div>' +
         '</div>' +
         '<button type="button" class="icon-btn remove-btn" title="ลบ" onclick="this.parentNode.remove()">' + icon('trash') + '</button>';
+
+      const ms = searchableSelect({
+        placeholder: 'พิมพ์ค้นหาวัตถุดิบ หรือเพิ่มใหม่...',
+        options: materialOptions(),
+        onAdd: function (query) {
+          quickAddMaterial(query, function (newMaterial) {
+            materials.push(newMaterial);
+            $$('#mats .item-card').forEach(function (r) {
+              if (r._materialSelect && r._materialSelect.setOptions) r._materialSelect.setOptions(materialOptions());
+            });
+            ms.setValue(newMaterial.material_id);
+          });
+        }
+      });
+      row.querySelector('[data-mount="material"]').appendChild(ms);
+      row._materialSelect = ms;
       $('#mats').appendChild(row);
+    }
+
+    function quickAddProduct(hintName, cb) {
+      const body = el('div');
+      body.innerHTML =
+        '<div class="field-row">' +
+          '<div class="field"><label class="field-label">รหัส</label><input class="field-input" id="qp_code"></div>' +
+          '<div class="field"><label class="field-label">หน่วย</label><input class="field-input" id="qp_unit" value="L"></div>' +
+        '</div>' +
+        '<div class="field"><label class="field-label">ชื่อสินค้า / สี <span class="required">*</span></label><input class="field-input" id="qp_name" value="' + esc(hintName || '') + '" autofocus></div>' +
+        '<div class="field"><label class="field-label">ประเภท</label><select class="field-select" id="qp_type">' +
+          '<option value="Industrial">สีอุตสาหกรรม</option><option value="Automotive">สีรถยนต์</option>' +
+        '</select></div>' +
+        '<div class="field"><label class="field-label">สูตรเริ่มต้น</label><input class="field-input" id="qp_form" placeholder="เช่น RAL 9005"></div>';
+      modal({
+        title: '+ เพิ่มสินค้า / สีใหม่',
+        body: body,
+        actions: [
+          { label: 'ยกเลิก' },
+          { label: 'บันทึก', class: 'btn-primary', onClick: async function () {
+            const name = body.querySelector('#qp_name').value.trim();
+            if (!name) { toast('กรุณากรอกชื่อสินค้า', 'error'); return false; }
+            try {
+              const newProd = await withLoader(API.upsertProduct({
+                code: body.querySelector('#qp_code').value,
+                name: name,
+                type: body.querySelector('#qp_type').value,
+                unit: body.querySelector('#qp_unit').value,
+                default_formula: body.querySelector('#qp_form').value
+              }));
+              toast('เพิ่มสินค้าสำเร็จ', 'success');
+              cb(newProd);
+            } catch (e) { toast(e.message, 'error'); return false; }
+          } }
+        ]
+      });
+    }
+
+    function quickAddMaterial(hintName, cb) {
+      const body = el('div');
+      body.innerHTML =
+        '<div class="field-row">' +
+          '<div class="field"><label class="field-label">รหัส</label><input class="field-input" id="qm_code"></div>' +
+          '<div class="field"><label class="field-label">หน่วย</label><input class="field-input" id="qm_unit" value="L"></div>' +
+        '</div>' +
+        '<div class="field"><label class="field-label">ชื่อวัตถุดิบ <span class="required">*</span></label><input class="field-input" id="qm_name" value="' + esc(hintName || '') + '" autofocus></div>' +
+        '<div class="field-row">' +
+          '<div class="field"><label class="field-label">สต็อก</label><input class="field-input" id="qm_stock" type="number" step="0.01" value="0"></div>' +
+          '<div class="field"><label class="field-label">จุดสั่งซื้อ</label><input class="field-input" id="qm_rop" type="number" step="0.01" value="0"></div>' +
+        '</div>';
+      modal({
+        title: '+ เพิ่มวัตถุดิบใหม่',
+        body: body,
+        actions: [
+          { label: 'ยกเลิก' },
+          { label: 'บันทึก', class: 'btn-primary', onClick: async function () {
+            const name = body.querySelector('#qm_name').value.trim();
+            if (!name) { toast('กรุณากรอกชื่อวัตถุดิบ', 'error'); return false; }
+            try {
+              const newMat = await withLoader(API.upsertMaterial({
+                code: body.querySelector('#qm_code').value,
+                name: name,
+                unit: body.querySelector('#qm_unit').value,
+                stock_qty: body.querySelector('#qm_stock').value,
+                reorder_point: body.querySelector('#qm_rop').value
+              }));
+              toast('เพิ่มวัตถุดิบสำเร็จ', 'success');
+              cb(newMat);
+            } catch (e) { toast(e.message, 'error'); return false; }
+          } }
+        ]
+      });
     }
     $('#add-item').addEventListener('click', addItem);
     $('#add-mat').addEventListener('click', addMat);
@@ -657,7 +796,7 @@
       const f = e.target;
       const items = $$('#items .item-card').map(function (r) {
         return {
-          product_id: r.querySelector('select[data-k="product_id"]').value,
+          product_id: r._productSelect ? r._productSelect.getValue() : '',
           qty: r.querySelector('input[data-k="qty"]').value,
           unit: r.querySelector('input[data-k="unit"]').value,
           formula_code: r.querySelector('input[data-k="formula_code"]').value,
@@ -666,7 +805,7 @@
       }).filter(function (i) { return i.product_id; });
       const mats = $$('#mats .item-card').map(function (r) {
         return {
-          material_id: r.querySelector('select[data-k="material_id"]').value,
+          material_id: r._materialSelect ? r._materialSelect.getValue() : '',
           qty_needed: r.querySelector('input[data-k="qty_needed"]').value
         };
       }).filter(function (m) { return m.material_id; });

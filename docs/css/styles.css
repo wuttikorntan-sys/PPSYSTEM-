@@ -1122,6 +1122,15 @@ table.table { width: 100%; border-collapse: collapse; }
 .ss-option:last-child { border-bottom: none; }
 .ss-option:hover, .ss-option.active { background: var(--primary-soft); color: var(--primary); }
 .ss-option.selected { background: var(--primary); color: #fff; }
+.ss-option.ss-add {
+  background: var(--gray-900);
+  color: var(--primary);
+  font-weight: 600;
+  border-top: 2px solid var(--border-orange);
+  position: sticky;
+  bottom: 0;
+}
+.ss-option.ss-add:hover { background: var(--primary-soft); color: var(--accent); }
 .ss-option .ss-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; }
 .ss-option:hover .ss-sub, .ss-option.active .ss-sub { color: rgba(249,115,22,0.8); }
 .ss-empty { padding: 16px; text-align: center; color: var(--text-muted); font-size: 13px; }

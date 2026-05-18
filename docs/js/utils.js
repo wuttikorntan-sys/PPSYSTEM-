@@ -297,19 +297,31 @@
         : items;
       if (!filtered.length) {
         panel.appendChild(el('div', { class: 'ss-empty' }, ['ไม่พบรายการ']));
-        return;
+      } else {
+        filtered.forEach(function (it, idx) {
+          const isSelected = it.value === selected;
+          const optEl = el('div', {
+            class: 'ss-option' + (isSelected ? ' selected' : '') + (idx === activeIdx ? ' active' : ''),
+            onClick: function (e) { e.stopPropagation(); setSelected(it.value); close(); }
+          }, [
+            el('div', {}, [it.label]),
+            it.sub ? el('div', { class: 'ss-sub' }, [it.sub]) : null
+          ]);
+          panel.appendChild(optEl);
+        });
       }
-      filtered.forEach(function (it, idx) {
-        const isSelected = it.value === selected;
-        const optEl = el('div', {
-          class: 'ss-option' + (isSelected ? ' selected' : '') + (idx === activeIdx ? ' active' : ''),
-          onClick: function (e) { e.stopPropagation(); setSelected(it.value); close(); }
+      // Add "+ create new" option at the bottom (if onAdd callback provided)
+      if (opts.onAdd) {
+        const addLabel = q
+          ? '+ เพิ่ม "' + (q.length > 30 ? q.slice(0, 30) + '...' : input.value) + '"'
+          : '+ เพิ่มใหม่';
+        panel.appendChild(el('div', {
+          class: 'ss-option ss-add',
+          onClick: function (e) { e.stopPropagation(); const v = input.value; close(); opts.onAdd(v); }
         }, [
-          el('div', {}, [it.label]),
-          it.sub ? el('div', { class: 'ss-sub' }, [it.sub]) : null
-        ]);
-        panel.appendChild(optEl);
-      });
+          el('div', {}, [addLabel])
+        ]));
+      }
     }
     function open() {
       wrap.classList.add('open');
